@@ -26,12 +26,15 @@ jobs:
           import base64, glob
           paths = sorted(glob.glob('.bootstrap/part*'))
           print('parts:', paths)
-          encoded = b''.join(open(path, 'rb').read() for path in paths)
-          encoded = b''.join(encoded.split())
-          print('encoded bytes:', len(encoded), 'prefix:', encoded[:8])
-          encoded += b'=' * ((-len(encoded)) % 4)
-          decoded = base64.b64decode(encoded, validate=False)
-          print('decoded bytes:', len(decoded), 'prefix:', decoded[:4])
+          decoded_parts = []
+          for path in paths:
+              encoded = b''.join(open(path, 'rb').read().split())
+              encoded += b'=' * ((-len(encoded)) % 4)
+              chunk = base64.b64decode(encoded, validate=False)
+              print(path, 'encoded=', len(encoded), 'decoded=', len(chunk), 'prefix=', chunk[:4])
+              decoded_parts.append(chunk)
+          decoded = b''.join(decoded_parts)
+          print('archive bytes:', len(decoded), 'prefix:', decoded[:4])
           open('/tmp/project.tar.gz', 'wb').write(decoded)
           PY
 
@@ -43,7 +46,7 @@ jobs:
         if: ${{ hashFiles('.bootstrap/part*') != '' }}
         run: |
           tar -xvzf /tmp/project.tar.gz
-          rm -rf .bootstrap .github/workflows/bootstrap.yml
+          rm -rf .bootstrap .github/workflows/bootstrap.yml .ci-retry*
 
       - name: Commit expanded source
         if: ${{ hashFiles('.bootstrap/part*') != '' }}
