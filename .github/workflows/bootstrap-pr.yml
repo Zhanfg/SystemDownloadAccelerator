@@ -17,22 +17,116 @@ jobs:
           ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
+      - name: Detect bootstrap source
+        id: bootstrap
+        shell: bash
+        run: |
+          if [[ -f .bootstrap/project.b64 ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Decode project archive
-        if: ${{ hashFiles('.bootstrap/project.b64') != '' }}
+        if: steps.bootstrap.outputs.present == 'true'
         run: base64 --decode .bootstrap/project.b64 > /tmp/project.tar.gz
 
       - name: Verify project archive
-        if: ${{ hashFiles('.bootstrap/project.b64') != '' }}
+        if: steps.bootstrap.outputs.present == 'true'
         run: gzip -tv /tmp/project.tar.gz
 
       - name: Extract project source
-        if: ${{ hashFiles('.bootstrap/project.b64') != '' }}
+        if: steps.bootstrap.outputs.present == 'true'
         run: |
           tar -xvzf /tmp/project.tar.gz
           rm -rf .bootstrap .ci-retry* .github/workflows/bootstrap.yml
 
+      - name: Normalize Android build toolchain
+        shell: bash
+        run: |
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+          }
+          EOF
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "SystemDownloadAccelerator"
+          include(":app")
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          EOF
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+          }
+
+          android {
+              namespace = "io.github.zhanfg.sda"
+              compileSdk = 35
+              buildToolsVersion = "35.0.0"
+
+              defaultConfig {
+                  applicationId = "io.github.zhanfg.sda"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "0.1.0-alpha1"
+              }
+
+              buildTypes {
+                  debug {
+                      applicationIdSuffix = ".debug"
+                      versionNameSuffix = "-debug"
+                  }
+                  release {
+                      isMinifyEnabled = true
+                      isShrinkResources = true
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                      signingConfig = signingConfigs.getByName("debug")
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              packaging {
+                  resources {
+                      merges += "META-INF/xposed/*"
+                  }
+              }
+
+              lint {
+                  abortOnError = false
+                  checkReleaseBuilds = false
+              }
+          }
+
+          dependencies {
+              compileOnly("io.github.libxposed:api:102.0.0")
+          }
+          EOF
+
       - name: Commit expanded source
-        if: ${{ hashFiles('.bootstrap/project.b64') != '' }}
+        if: steps.bootstrap.outputs.present == 'true'
         continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
@@ -44,16 +138,16 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "17"
 
       - uses: android-actions/setup-android@v3
 
       - name: Install Android SDK
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.3.1"
+          gradle-version: "8.9"
 
       - name: Build APKs
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
