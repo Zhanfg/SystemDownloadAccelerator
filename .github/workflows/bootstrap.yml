@@ -1,0 +1,60 @@
+name: Bootstrap and Build Alpha
+
+on:
+  push:
+    branches: [ "alpha/**" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Expand project source
+        shell: bash
+        run: |
+          cat .bootstrap/part* | base64 --decode > /tmp/project.tar.gz
+          tar -xzf /tmp/project.tar.gz
+          rm -rf .bootstrap .github/workflows/bootstrap.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Implement alpha 1 module" || true
+          git push
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: yes | sdkmanager "platforms;android-37" "build-tools;37.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Build APKs
+        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-alpha1-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-alpha1.apk
+          cd dist
+          sha256sum *.apk > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SystemDownloadAccelerator-alpha1
+          path: dist/*
+          if-no-files-found: error
