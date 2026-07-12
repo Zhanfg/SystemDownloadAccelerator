@@ -23,19 +23,49 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import base64, glob
+          import base64, glob, gzip
+
           paths = sorted(glob.glob('.bootstrap/part*'))
-          print('parts:', paths)
-          decoded_parts = []
-          for path in paths:
-              encoded = b''.join(open(path, 'rb').read().split())
-              encoded += b'=' * ((-len(encoded)) % 4)
-              chunk = base64.b64decode(encoded, validate=False)
-              print(path, 'encoded=', len(encoded), 'decoded=', len(chunk), 'prefix=', chunk[:4])
-              decoded_parts.append(chunk)
-          decoded = b''.join(decoded_parts)
-          print('archive bytes:', len(decoded), 'prefix:', decoded[:4])
-          open('/tmp/project.tar.gz', 'wb').write(decoded)
+          parts = [b''.join(open(path, 'rb').read().split()) for path in paths]
+          joined = b''.join(parts)
+
+          def dec(data):
+              data = b''.join(data.split())
+              data += b'=' * ((-len(data)) % 4)
+              return base64.b64decode(data, validate=False)
+
+          candidates = []
+          candidates.append(('raw-joined', joined))
+          try:
+              candidates.append(('decode-joined', dec(joined)))
+          except Exception as e:
+              print('decode-joined failed:', repr(e))
+          try:
+              separately = b''.join(dec(part) for part in parts)
+              candidates.append(('decode-parts', separately))
+              try:
+                  candidates.append(('decode-parts-twice', dec(separately)))
+              except Exception as e:
+                  print('decode-parts-twice failed:', repr(e))
+          except Exception as e:
+              print('decode-parts failed:', repr(e))
+          try:
+              once = dec(joined)
+              candidates.append(('decode-joined-twice', dec(once)))
+          except Exception as e:
+              print('decode-joined-twice failed:', repr(e))
+
+          for name, data in candidates:
+              print(name, 'bytes=', len(data), 'prefix=', data[:8])
+              try:
+                  unpacked = gzip.decompress(data)
+                  print('selected:', name, 'unpacked bytes=', len(unpacked))
+                  open('/tmp/project.tar.gz', 'wb').write(data)
+                  break
+              except Exception as e:
+                  print(name, 'not gzip:', repr(e))
+          else:
+              raise SystemExit('No valid gzip candidate found')
           PY
 
       - name: Verify project archive
