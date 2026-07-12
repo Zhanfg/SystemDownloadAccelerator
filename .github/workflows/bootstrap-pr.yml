@@ -19,7 +19,18 @@ jobs:
 
       - name: Decode project archive
         if: ${{ hashFiles('.bootstrap/part*') != '' }}
-        run: cat .bootstrap/part* | base64 --decode > /tmp/project.tar.gz
+        shell: python
+        run: |
+          import base64, glob
+          parts = []
+          for path in sorted(glob.glob('.bootstrap/part*')):
+              with open(path, 'rb') as f:
+                  parts.append(f.read())
+          encoded = b''.join(parts)
+          encoded = b''.join(encoded.split())
+          encoded += b'=' * ((-len(encoded)) % 4)
+          with open('/tmp/project.tar.gz', 'wb') as out:
+              out.write(base64.b64decode(encoded, validate=False))
 
       - name: Verify project archive
         if: ${{ hashFiles('.bootstrap/part*') != '' }}
