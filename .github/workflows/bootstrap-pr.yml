@@ -17,20 +17,29 @@ jobs:
           ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
-      - name: Expand project source
+      - name: Decode project archive
         if: ${{ hashFiles('.bootstrap/part*') != '' }}
-        shell: bash
+        run: cat .bootstrap/part* | base64 --decode > /tmp/project.tar.gz
+
+      - name: Verify project archive
+        if: ${{ hashFiles('.bootstrap/part*') != '' }}
+        run: gzip -tv /tmp/project.tar.gz
+
+      - name: Extract project source
+        if: ${{ hashFiles('.bootstrap/part*') != '' }}
         run: |
-          set -euxo pipefail
-          cat .bootstrap/part* | base64 --decode > /tmp/project.tar.gz
-          gzip -t /tmp/project.tar.gz
-          tar -xzf /tmp/project.tar.gz
+          tar -xvzf /tmp/project.tar.gz
           rm -rf .bootstrap .github/workflows/bootstrap.yml
-          git config user.name "github-actions[bot]]"
+
+      - name: Commit expanded source
+        if: ${{ hashFiles('.bootstrap/part*') != '' }}
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Implement alpha 1 module" || true
-          git push origin HEAD:${{ github.head_ref }} || echo "Branch push unavailable; continuing build from expanded workspace"
+          git push origin HEAD:${{ github.head_ref }}
 
       - uses: actions/setup-java@v4
         with:
