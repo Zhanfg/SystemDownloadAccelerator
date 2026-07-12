@@ -1,4 +1,4 @@
-name: Bootstrap and Build Alpha
+name: Expand and Patch Alpha
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  expand-and-patch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,42 +19,118 @@ jobs:
       - name: Expand project source
         shell: bash
         run: |
-          cat .bootstrap/part* | base64 --decode > /tmp/project.tar.gz
+          set -euo pipefail
+          if [[ -f .bootstrap/project.b64 ]]; then
+            base64 --decode .bootstrap/project.b64 > /tmp/project.tar.gz
+          else
+            cat .bootstrap/part* | base64 --decode > /tmp/project.tar.gz
+          fi
+          gzip -t /tmp/project.tar.gz
           tar -xzf /tmp/project.tar.gz
-          rm -rf .bootstrap .github/workflows/bootstrap.yml
+
+      - name: Apply dynamic system-bar insets
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="app/src/main/java/io/github/zhanfg/sda"
+          mkdir -p "$SRC"
+          cat > "$SRC/SystemBarInsets.java" <<'JAVA'
+          package io.github.zhanfg.sda;
+
+          import android.graphics.Insets;
+          import android.os.Build;
+          import android.view.View;
+          import android.view.WindowInsets;
+
+          /** Applies status-bar, display-cutout and navigation-bar insets without fixed pixel values. */
+          final class SystemBarInsets {
+              private SystemBarInsets() {}
+
+              static void apply(View root) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT_WATCH) {
+                      root.setFitsSystemWindows(true);
+                      return;
+                  }
+
+                  final int baseLeft = root.getPaddingLeft();
+                  final int baseTop = root.getPaddingTop();
+                  final int baseRight = root.getPaddingRight();
+                  final int baseBottom = root.getPaddingBottom();
+
+                  root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+                      int left;
+                      int top;
+                      int right;
+                      int bottom;
+
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                          Insets bars = windowInsets.getInsets(
+                                  WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                          left = bars.left;
+                          top = bars.top;
+                          right = bars.right;
+                          bottom = bars.bottom;
+                      } else {
+                          left = windowInsets.getSystemWindowInsetLeft();
+                          top = windowInsets.getSystemWindowInsetTop();
+                          right = windowInsets.getSystemWindowInsetRight();
+                          bottom = windowInsets.getSystemWindowInsetBottom();
+                      }
+
+                      view.setPadding(
+                              baseLeft + left,
+                              baseTop + top,
+                              baseRight + right,
+                              baseBottom + bottom);
+                      return windowInsets;
+                  });
+                  root.requestApplyInsets();
+              }
+          }
+          JAVA
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('app/src/main/java/io/github/zhanfg/sda')
+
+          main = root / 'MainActivity.java'
+          text = main.read_text(encoding='utf-8')
+          replacement = '''android.view.View rootView = buildRoot();
+                  SystemBarInsets.apply(rootView);
+                  setContentView(rootView);'''
+          text, count = re.subn(
+              r'(?:this\.)?setContentView\((?:this\.)?buildRoot\(\)\);',
+              replacement,
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('MainActivity setContentView pattern not found')
+          main.write_text(text, encoding='utf-8')
+
+          confirm = root / 'DownloadConfirmActivity.java'
+          text = confirm.read_text(encoding='utf-8')
+          pattern = r'(?:this\.)?setContentView\((?:this\.)?build\(([^;]+?)\)\);'
+          match = re.search(pattern, text)
+          if not match:
+              raise SystemExit('DownloadConfirmActivity setContentView pattern not found')
+          arg = match.group(1)
+          replacement = f'''android.view.View rootView = build({arg});
+                  SystemBarInsets.apply(rootView);
+                  setContentView(rootView);'''
+          text = re.sub(pattern, replacement, text, count=1)
+          confirm.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit expanded patched source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .bootstrap .github/workflows/bootstrap.yml .ci-retry*
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Implement alpha 1 module" || true
+          git commit -m "Fix system bar inset handling"
           git push
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK
-        run: yes | sdkmanager "platforms;android-37" "build-tools;37.0.0"
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.3.1"
-
-      - name: Build APKs
-        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
-
-      - name: Prepare artifacts
-        run: |
-          mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-alpha1-debug.apk
-          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-alpha1.apk
-          cd dist
-          sha256sum *.apk > SHA256SUMS.txt
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: SystemDownloadAccelerator-alpha1
-          path: dist/*
-          if-no-files-found: error
