@@ -19,18 +19,21 @@ jobs:
 
       - name: Decode project archive
         if: ${{ hashFiles('.bootstrap/part*') != '' }}
-        shell: python
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 - <<'PY'
           import base64, glob
-          parts = []
-          for path in sorted(glob.glob('.bootstrap/part*')):
-              with open(path, 'rb') as f:
-                  parts.append(f.read())
-          encoded = b''.join(parts)
+          paths = sorted(glob.glob('.bootstrap/part*'))
+          print('parts:', paths)
+          encoded = b''.join(open(path, 'rb').read() for path in paths)
           encoded = b''.join(encoded.split())
+          print('encoded bytes:', len(encoded), 'prefix:', encoded[:8])
           encoded += b'=' * ((-len(encoded)) % 4)
-          with open('/tmp/project.tar.gz', 'wb') as out:
-              out.write(base64.b64decode(encoded, validate=False))
+          decoded = base64.b64decode(encoded, validate=False)
+          print('decoded bytes:', len(decoded), 'prefix:', decoded[:4])
+          open('/tmp/project.tar.gz', 'wb').write(decoded)
+          PY
 
       - name: Verify project archive
         if: ${{ hashFiles('.bootstrap/part*') != '' }}
