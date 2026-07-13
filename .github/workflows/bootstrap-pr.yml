@@ -1,4 +1,4 @@
-name: Build Central System Confirmation
+name: Build Modern UI and Real History
 
 on:
   pull_request:
@@ -27,7 +27,7 @@ jobs:
             tar -xzf /tmp/project.tar.gz
           fi
 
-      - name: Apply system-bar insets
+      - name: Add system-bar inset helper
         shell: bash
         run: |
           set -euo pipefail
@@ -80,75 +80,90 @@ jobs:
           }
           JAVA
 
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          root = Path('app/src/main/java/io/github/zhanfg/sda')
-          main = root / 'MainActivity.java'
-          text = main.read_text(encoding='utf-8')
-          if 'SystemBarInsets.apply(rootView);' not in text:
-              text, count = re.subn(
-                  r'(?:this\.)?setContentView\((?:this\.)?buildRoot\(\)\);',
-                  '''android.view.View rootView = buildRoot();
-                  SystemBarInsets.apply(rootView);
-                  setContentView(rootView);''',
-                  text,
-                  count=1,
-              )
-              if count != 1:
-                  raise SystemExit('MainActivity inset patch failed')
-              main.write_text(text, encoding='utf-8')
-
-          old = root / 'DownloadConfirmActivity.java'
-          text = old.read_text(encoding='utf-8')
-          if 'SystemBarInsets.apply(rootView);' not in text:
-              pattern = r'(?:this\.)?setContentView\((?:this\.)?build\(([^;]+?)\)\);'
-              match = re.search(pattern, text)
-              if not match:
-                  raise SystemExit('DownloadConfirmActivity inset patch failed')
-              arg = match.group(1)
-              text = re.sub(pattern, f'''android.view.View rootView = build({arg});
-                  SystemBarInsets.apply(rootView);
-                  setContentView(rootView);''', text, count=1)
-              old.write_text(text, encoding='utf-8')
-          PY
-
-      - name: Register central confirmation activity
+      - name: Register modern launcher, confirmation and history provider
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           manifest = Path('app/src/main/AndroidManifest.xml')
           xml = manifest.read_text(encoding='utf-8')
-          activity = '''
+
+          # Keep the original launcher intent-filter but move it to the new adaptive activity.
+          xml = xml.replace('android:name=".MainActivity"',
+                            'android:name=".ModernMainActivity"', 1)
+          xml = xml.replace('android:name="io.github.zhanfg.sda.MainActivity"',
+                            'android:name="io.github.zhanfg.sda.ModernMainActivity"', 1)
+
+          if '.SystemDownloadConfirmActivity' not in xml:
+              activity = '''
                   <activity
                       android:name=".SystemDownloadConfirmActivity"
                       android:exported="true"
                       android:excludeFromRecents="true"
                       android:launchMode="singleTop"
                       android:noHistory="true" />
-          '''
-          if '.SystemDownloadConfirmActivity' not in xml:
+              '''
               xml = xml.replace('</application>', activity + '\n    </application>', 1)
-              manifest.write_text(xml, encoding='utf-8')
+
+          if 'io.github.zhanfg.sda.history' not in xml:
+              provider = '''
+                  <provider
+                      android:name=".HistoryProvider"
+                      android:authorities="io.github.zhanfg.sda.history"
+                      android:exported="true" />
+              '''
+              xml = xml.replace('</application>', provider + '\n    </application>', 1)
+
+          manifest.write_text(xml, encoding='utf-8')
+
+          central = Path('app/src/main/java/io/github/zhanfg/sda/xposed/SystemDownloadConfirmationModule.java')
+          text = central.read_text(encoding='utf-8')
+          old = '''        void resume() throws Exception {
+                      ContentValues values = new ContentValues();
+                      values.put("control", 0);
+                      values.put("status", 190);
+                      update.invoke(provider, uri, values, null, null);
+                  }'''
+          new = '''        void resume() throws Exception {
+                      ContentValues values = new ContentValues();
+                      values.put("control", 0);
+                      update.invoke(provider, uri, values, null, null);
+                      ContentProvider contentProvider = (ContentProvider) provider;
+                      Context context = contentProvider.getContext();
+                      if (context != null) {
+                          context.getContentResolver().notifyChange(uri, null);
+                          Intent wakeup = new Intent("android.intent.action.DOWNLOAD_WAKEUP");
+                          wakeup.setPackage(TARGET_PACKAGE);
+                          context.sendBroadcast(wakeup);
+                      }
+                  }'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          else:
+              text = text.replace('values.put("status", 190);\n', '')
+          central.write_text(text, encoding='utf-8')
           PY
 
       - name: Configure API 102 module metadata
         shell: bash
         run: |
           set -euo pipefail
+          test -f app/src/main/java/io/github/zhanfg/sda/ModernMainActivity.java
+          test -f app/src/main/java/io/github/zhanfg/sda/HistoryProvider.java
+          test -f app/src/main/java/io/github/zhanfg/sda/SystemDownloadConfirmActivity.java
           test -f app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java
           test -f app/src/main/java/io/github/zhanfg/sda/xposed/SystemDownloadConfirmationModule.java
-          test -f app/src/main/java/io/github/zhanfg/sda/SystemDownloadConfirmActivity.java
+          test -f app/src/main/java/io/github/zhanfg/sda/xposed/HistoryMirrorModule.java
 
           META="app/src/main/resources/META-INF/xposed"
           mkdir -p "$META"
           cat > "$META/java_init.list" <<'EOF'
           io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule
           io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule
+          io.github.zhanfg.sda.xposed.HistoryMirrorModule
           EOF
           printf '%s\n' 'com.android.providers.downloads' > "$META/scope.list"
           cat > "$META/module.prop" <<'EOF'
@@ -160,11 +175,15 @@ jobs:
 
           cat >> app/proguard-rules.pro <<'EOF'
 
+          -keep class io.github.zhanfg.sda.ModernMainActivity { public *; }
+          -keep class io.github.zhanfg.sda.SystemDownloadConfirmActivity { public *; }
+          -keep class io.github.zhanfg.sda.HistoryProvider { public *; }
           -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule { public *; }
           -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule$* { *; }
           -keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule { public *; }
           -keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule$* { *; }
-          -keep class io.github.zhanfg.sda.SystemDownloadConfirmActivity { public *; }
+          -keep class io.github.zhanfg.sda.xposed.HistoryMirrorModule { public *; }
+          -keep class io.github.zhanfg.sda.xposed.HistoryMirrorModule$* { *; }
           EOF
 
       - name: Normalize Android build toolchain
@@ -212,8 +231,8 @@ jobs:
                   applicationId = "io.github.zhanfg.sda"
                   minSdk = 26
                   targetSdk = 35
-                  versionCode = 5
-                  versionName = "0.2.2-alpha4"
+                  versionCode = 6
+                  versionName = "0.2.3-alpha5"
               }
 
               buildTypes {
@@ -268,13 +287,17 @@ jobs:
       - name: Build APKs
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
 
-      - name: Verify central confirmation packaging
+      - name: Verify modern UI, history and API 102 packaging
         shell: bash
         run: |
           set -euo pipefail
           for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
             unzip -p "$apk" META-INF/xposed/java_init.list | grep -qx \
+              'io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule'
+            unzip -p "$apk" META-INF/xposed/java_init.list | grep -qx \
               'io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule'
+            unzip -p "$apk" META-INF/xposed/java_init.list | grep -qx \
+              'io.github.zhanfg.sda.xposed.HistoryMirrorModule'
             unzip -p "$apk" META-INF/xposed/scope.list | grep -qx \
               'com.android.providers.downloads'
             unzip -p "$apk" META-INF/xposed/module.prop | grep -qx \
@@ -284,13 +307,13 @@ jobs:
       - name: Prepare artifacts
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-0.2.2-alpha4-debug.apk
-          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-0.2.2-alpha4.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-0.2.3-alpha5-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-0.2.3-alpha5.apk
           cd dist
           sha256sum *.apk > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-0.2.2-alpha4
+          name: SystemDownloadAccelerator-0.2.3-alpha5
           path: dist/*
           if-no-files-found: error
