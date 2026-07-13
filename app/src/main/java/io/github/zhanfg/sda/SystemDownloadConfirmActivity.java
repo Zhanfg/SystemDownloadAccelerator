@@ -1,12 +1,10 @@
 package io.github.zhanfg.sda;
 
 import android.app.Activity;
-import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
@@ -15,24 +13,16 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.Locale;
 
-/** Confirmation UI for downloads already inserted and paused by DownloadProvider. */
+/** Translucent fallback UI used only when the originating app is not in module scope. */
 public final class SystemDownloadConfirmActivity extends Activity {
     private static final String ACTION_DECISION =
             "io.github.zhanfg.sda.action.SYSTEM_DOWNLOAD_DECISION";
     private static final String DOWNLOAD_PROVIDER = "com.android.providers.downloads";
-
-    private static final int BG = Color.rgb(246, 246, 252);
-    private static final int CARD = Color.rgb(235, 237, 247);
-    private static final int PRIMARY = Color.rgb(89, 104, 138);
-    private static final int TEXT = Color.rgb(38, 40, 49);
-    private static final int MUTED = Color.rgb(96, 99, 112);
 
     private String token;
     private boolean decisionSent;
@@ -41,20 +31,20 @@ public final class SystemDownloadConfirmActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
+        overridePendingTransition(0, 0);
 
         Intent intent = getIntent();
         token = intent.getStringExtra("token");
         if (TextUtils.isEmpty(token)) {
-            finish();
+            finishWithoutAnimation();
             return;
         }
 
         Window window = getWindow();
         window.setBackgroundDrawableResource(android.R.color.transparent);
-        window.setDimAmount(0.45f);
         window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.WRAP_CONTENT);
+        window.setDimAmount(0.48f);
+        window.setWindowAnimations(0);
         setFinishOnTouchOutside(false);
 
         String fileName = safe(intent.getStringExtra("file_name"), "download.bin");
@@ -63,85 +53,83 @@ public final class SystemDownloadConfirmActivity extends Activity {
         String mime = safe(intent.getStringExtra("mime_type"), "application/octet-stream");
         long size = intent.getLongExtra("file_size", -1L);
 
-        View root = build(fileName, url, source, mime, size);
-        SystemBarInsets.apply(root);
-        setContentView(root);
+        setContentView(build(fileName, url, source, mime, size));
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        Window window = getWindow();
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int width = Math.min(screenWidth - dp(32), dp(520));
+        window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
+        window.setGravity(Gravity.CENTER);
     }
 
     private View build(String fileName, String url, String source, String mime, long size) {
-        LinearLayout screen = new LinearLayout(this);
-        screen.setOrientation(LinearLayout.VERTICAL);
-        screen.setGravity(Gravity.CENTER);
-        screen.setPadding(dp(16), dp(16), dp(16), dp(16));
-        screen.setBackgroundColor(Color.TRANSPARENT);
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
+        boolean dark = (getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        int background = dark ? Color.rgb(30, 33, 39) : Color.rgb(248, 249, 252);
+        int panel = dark ? Color.rgb(42, 46, 54) : Color.rgb(237, 241, 246);
+        int textPrimary = dark ? Color.rgb(241, 243, 248) : Color.rgb(30, 34, 41);
+        int textSecondary = dark ? Color.rgb(178, 184, 194) : Color.rgb(92, 100, 112);
+        int primary = Color.rgb(42, 122, 143);
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setGravity(Gravity.CENTER_HORIZONTAL);
-        card.setPadding(dp(22), dp(24), dp(22), dp(20));
-        card.setBackground(roundRect(BG, 30));
+        card.setPadding(dp(22), dp(22), dp(22), dp(18));
+        card.setBackground(roundRect(background, 28));
 
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(getApplicationInfo().icon);
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(64), dp(64));
-        iconParams.bottomMargin = dp(14);
-        card.addView(icon, iconParams);
+        TextView title = text("下载文件", 23, textPrimary, true, Gravity.START);
+        card.addView(title);
 
-        card.addView(text("下载此文件？", 25, TEXT, true, Gravity.CENTER));
-        card.addView(space(8));
-
-        TextView name = text(fileName, 18, TEXT, true, Gravity.CENTER);
+        TextView name = text(fileName, 17, textPrimary, true, Gravity.START);
+        name.setPadding(0, dp(14), 0, 0);
         name.setMaxLines(2);
         name.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-        card.addView(name, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        card.addView(space(14));
+        card.addView(name);
 
-        LinearLayout information = panel();
-        addInfo(information, "文件大小", formatSize(size));
-        addInfo(information, "来源", source);
-        addInfo(information, "文件类型", mime);
-        addInfo(information, "下载线程", "自动 · 由模块动态调度");
-        card.addView(information);
-        card.addView(space(12));
-
-        LinearLayout directory = panel();
-        directory.addView(text("保存位置", 13, MUTED, false, Gravity.START));
-        TextView destination = text("由发起应用指定", 16, TEXT, true, Gravity.START);
-        destination.setPadding(0, dp(6), 0, 0);
-        directory.addView(destination);
-        card.addView(directory);
-        card.addView(space(12));
-
-        LinearLayout linkPanel = panel();
-        linkPanel.addView(text("下载链接", 13, MUTED, false, Gravity.START));
-        TextView link = text(url, 13, TEXT, false, Gravity.START);
-        link.setMaxLines(3);
+        TextView link = text(url, 13, textSecondary, false, Gravity.START);
+        link.setPadding(0, dp(7), 0, 0);
+        link.setMaxLines(2);
         link.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-        link.setPadding(0, dp(6), 0, 0);
-        linkPanel.addView(link);
-        card.addView(linkPanel);
-        card.addView(space(16));
+        link.setTextIsSelectable(true);
+        card.addView(link);
 
-        Button confirm = button("开始下载", true);
-        confirm.setOnClickListener(v -> sendDecision(true));
-        card.addView(confirm, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
-        card.addView(space(10));
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setPadding(dp(16), dp(13), dp(16), dp(13));
+        details.setBackground(roundRect(panel, 18));
+        LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        detailsParams.topMargin = dp(16);
+        card.addView(details, detailsParams);
 
-        Button cancel = button("取消", false);
+        addInfo(details, "文件大小", formatSize(size), textPrimary, textSecondary);
+        addInfo(details, "来源应用", source, textPrimary, textSecondary);
+        addInfo(details, "文件类型", mime, textPrimary, textSecondary);
+        addInfo(details, "保存位置", "由发起应用指定", textPrimary, textSecondary);
+        addInfo(details, "下载方式", "自动 · 多线程可用时启用", textPrimary, textSecondary);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        actionsParams.topMargin = dp(18);
+        card.addView(actions, actionsParams);
+
+        Button cancel = button("取消", textPrimary, panel);
         cancel.setOnClickListener(v -> sendDecision(false));
-        card.addView(cancel, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
-
-        scroll.addView(card, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        screen.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return screen;
+        Button confirm = button("开始下载", Color.WHITE, primary);
+        confirm.setOnClickListener(v -> sendDecision(true));
+        actions.addView(cancel, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        View gap = new View(this);
+        actions.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
+        actions.addView(confirm, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        return card;
     }
 
     private void sendDecision(boolean allow) {
@@ -154,7 +142,7 @@ public final class SystemDownloadConfirmActivity extends Activity {
         decision.putExtra("token", token);
         decision.putExtra("decision", allow ? 1 : 0);
         sendBroadcast(decision);
-        finish();
+        finishWithoutAnimation();
     }
 
     @Override
@@ -162,34 +150,32 @@ public final class SystemDownloadConfirmActivity extends Activity {
         sendDecision(false);
     }
 
-    private LinearLayout panel() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(16), dp(13), dp(16), dp(13));
-        panel.setBackground(roundRect(CARD, 18));
-        panel.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return panel;
+    private void finishWithoutAnimation() {
+        finish();
+        overridePendingTransition(0, 0);
     }
 
-    private void addInfo(LinearLayout parent, String keyText, String valueText) {
+    private void addInfo(LinearLayout parent, String keyText, String valueText,
+                         int textPrimary, int textSecondary) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView key = text(keyText, 14, MUTED, false, Gravity.START);
-        TextView value = text(valueText, 14, TEXT, false, Gravity.END);
+        TextView key = text(keyText, 14, textSecondary, false, Gravity.START);
+        TextView value = text(valueText, 14, textPrimary, false, Gravity.END);
         value.setMaxLines(2);
         row.addView(key, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 0.38f));
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0.34f));
         row.addView(value, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 0.62f));
-        parent.addView(row);
-        parent.addView(space(7));
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0.66f));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.bottomMargin = dp(8);
+        parent.addView(row, params);
     }
 
     private TextView text(String value, float size, int color, boolean bold, int gravity) {
         TextView view = new TextView(this);
-        view.setText(value);
+        view.setText(value == null ? "" : value);
         view.setTextSize(size);
         view.setTextColor(color);
         view.setGravity(gravity);
@@ -197,14 +183,14 @@ public final class SystemDownloadConfirmActivity extends Activity {
         return view;
     }
 
-    private Button button(String label, boolean primary) {
+    private Button button(String label, int textColor, int background) {
         Button button = new Button(this);
         button.setText(label);
-        button.setTextSize(16);
+        button.setTextSize(15);
         button.setAllCaps(false);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setTextColor(primary ? Color.WHITE : TEXT);
-        button.setBackground(roundRect(primary ? PRIMARY : CARD, 18));
+        button.setTextColor(textColor);
+        button.setBackground(roundRect(background, 17));
         return button;
     }
 
@@ -213,12 +199,6 @@ public final class SystemDownloadConfirmActivity extends Activity {
         drawable.setColor(color);
         drawable.setCornerRadius(dp(radiusDp));
         return drawable;
-    }
-
-    private View space(int heightDp) {
-        View view = new View(this);
-        view.setLayoutParams(new LinearLayout.LayoutParams(1, dp(heightDp)));
-        return view;
     }
 
     private int dp(int value) {
