@@ -86,12 +86,9 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           manifest = Path('app/src/main/AndroidManifest.xml')
           xml = manifest.read_text(encoding='utf-8')
-
-          # Keep the original launcher intent-filter but move it to the new adaptive activity.
           xml = xml.replace('android:name=".MainActivity"',
                             'android:name=".ModernMainActivity"', 1)
           xml = xml.replace('android:name="io.github.zhanfg.sda.MainActivity"',
@@ -285,7 +282,24 @@ jobs:
           gradle-version: "8.9"
 
       - name: Build APKs
-        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+        id: gradle_build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:assembleDebug :app:assembleRelease 2>&1 | tee build.log
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemDownloadAccelerator-alpha5-build-log
+          path: build.log
+          if-no-files-found: warn
+
+      - name: Stop after failed compilation
+        if: steps.gradle_build.outcome != 'success'
+        run: exit 1
 
       - name: Verify modern UI, history and API 102 packaging
         shell: bash
