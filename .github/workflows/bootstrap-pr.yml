@@ -1,4 +1,4 @@
-name: Build Real API 102 Module
+name: Build Central System Confirmation
 
 on:
   pull_request:
@@ -114,70 +114,24 @@ jobs:
               old.write_text(text, encoding='utf-8')
           PY
 
-      - name: Wire browser confirmation hook
+      - name: Register central confirmation activity
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          module = Path('app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java')
-          text = module.read_text(encoding='utf-8')
-          old = '''    @Override
-              public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
-                  if (!TARGET_PACKAGE.equals(param.getPackageName())) {
-                      return;
-                  }
-
-                  final ClassLoader classLoader = param.getClassLoader();
-                  for (String className : TRANSFER_CLASSES) {
-                      try {
-                          installTransferHooks(classLoader, className);
-                      } catch (Throwable error) {
-                          log(Log.ERROR, TAG, "Failed to install real engine hooks for " + className, error);
-                      }
-                  }
-              }
-          '''
-          new = '''    @Override
-              public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
-                  if (TARGET_PACKAGE.equals(param.getPackageName())) {
-                      final ClassLoader classLoader = param.getClassLoader();
-                      for (String className : TRANSFER_CLASSES) {
-                          try {
-                              installTransferHooks(classLoader, className);
-                          } catch (Throwable error) {
-                              log(Log.ERROR, TAG, "Failed to install real engine hooks for " + className, error);
-                          }
-                      }
-                      return;
-                  }
-
-                  try {
-                      DownloadConfirmationHook.install(this, param);
-                  } catch (Throwable error) {
-                      log(Log.ERROR, TAG,
-                              "Failed to install download confirmation hook in "
-                                      + param.getPackageName(), error);
-                  }
-              }
-          '''
-          if 'DownloadConfirmationHook.install(this, param)' not in text:
-              if old not in text:
-                  raise SystemExit('Real module onPackageReady block not found')
-              text = text.replace(old, new, 1)
-              module.write_text(text, encoding='utf-8')
-
           manifest = Path('app/src/main/AndroidManifest.xml')
           xml = manifest.read_text(encoding='utf-8')
           activity = '''
                   <activity
-                      android:name=".InterceptDownloadConfirmActivity"
+                      android:name=".SystemDownloadConfirmActivity"
                       android:exported="true"
                       android:excludeFromRecents="true"
+                      android:launchMode="singleTop"
                       android:noHistory="true" />
           '''
-          if '.InterceptDownloadConfirmActivity' not in xml:
+          if '.SystemDownloadConfirmActivity' not in xml:
               xml = xml.replace('</application>', activity + '\n    </application>', 1)
               manifest.write_text(xml, encoding='utf-8')
           PY
@@ -187,23 +141,16 @@ jobs:
         run: |
           set -euo pipefail
           test -f app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java
-          test -f app/src/main/java/io/github/zhanfg/sda/xposed/DownloadConfirmationHook.java
-          test -f app/src/main/java/io/github/zhanfg/sda/InterceptDownloadConfirmActivity.java
+          test -f app/src/main/java/io/github/zhanfg/sda/xposed/SystemDownloadConfirmationModule.java
+          test -f app/src/main/java/io/github/zhanfg/sda/SystemDownloadConfirmActivity.java
 
           META="app/src/main/resources/META-INF/xposed"
           mkdir -p "$META"
-          printf '%s\n' 'io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule' > "$META/java_init.list"
-          cat > "$META/scope.list" <<'EOF'
-          com.android.providers.downloads
-          mark.via.gp
-          mark.via
-          com.android.chrome
-          com.heytap.browser
-          com.microsoft.emmx
-          org.mozilla.firefox
-          com.sec.android.app.sbrowser
-          com.android.browser
+          cat > "$META/java_init.list" <<'EOF'
+          io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule
+          io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule
           EOF
+          printf '%s\n' 'com.android.providers.downloads' > "$META/scope.list"
           cat > "$META/module.prop" <<'EOF'
           minApiVersion=102
           targetApiVersion=102
@@ -215,9 +162,9 @@ jobs:
 
           -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule { public *; }
           -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule$* { *; }
-          -keep class io.github.zhanfg.sda.xposed.DownloadConfirmationHook { *; }
-          -keep class io.github.zhanfg.sda.xposed.DownloadConfirmationHook$* { *; }
-          -keep class io.github.zhanfg.sda.InterceptDownloadConfirmActivity { public *; }
+          -keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule { public *; }
+          -keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule$* { *; }
+          -keep class io.github.zhanfg.sda.SystemDownloadConfirmActivity { public *; }
           EOF
 
       - name: Normalize Android build toolchain
@@ -265,8 +212,8 @@ jobs:
                   applicationId = "io.github.zhanfg.sda"
                   minSdk = 26
                   targetSdk = 35
-                  versionCode = 4
-                  versionName = "0.2.1-alpha3"
+                  versionCode = 5
+                  versionName = "0.2.2-alpha4"
               }
 
               buildTypes {
@@ -321,36 +268,29 @@ jobs:
       - name: Build APKs
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
 
-      - name: Verify confirmation packaging
-        continue-on-error: true
+      - name: Verify central confirmation packaging
         shell: bash
         run: |
           set -euo pipefail
-          index=0
           for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
-            index=$((index + 1))
-            unzip -p "$apk" META-INF/xposed/java_init.list > "/tmp/java-init-$index.txt"
-            unzip -p "$apk" META-INF/xposed/scope.list > "/tmp/scope-$index.txt"
-            unzip -p "$apk" META-INF/xposed/module.prop > "/tmp/module-$index.txt"
-            unzip -p "$apk" classes.dex > "/tmp/classes-$index.dex"
-            test "$(tr -d '\r\n' < "/tmp/java-init-$index.txt")" = \
-              "io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule"
-            grep -qx 'mark.via.gp' "/tmp/scope-$index.txt"
-            grep -qx 'targetApiVersion=102' "/tmp/module-$index.txt"
-            strings "/tmp/classes-$index.dex" > "/tmp/classes-$index.txt"
-            grep -Fq 'InterceptDownloadConfirmActivity' "/tmp/classes-$index.txt"
+            unzip -p "$apk" META-INF/xposed/java_init.list | grep -qx \
+              'io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule'
+            unzip -p "$apk" META-INF/xposed/scope.list | grep -qx \
+              'com.android.providers.downloads'
+            unzip -p "$apk" META-INF/xposed/module.prop | grep -qx \
+              'targetApiVersion=102'
           done
 
       - name: Prepare artifacts
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-0.2.1-alpha3-debug.apk
-          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-0.2.1-alpha3.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-0.2.2-alpha4-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-0.2.2-alpha4.apk
           cd dist
           sha256sum *.apk > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-0.2.1-alpha3
+          name: SystemDownloadAccelerator-0.2.2-alpha4
           path: dist/*
           if-no-files-found: error
