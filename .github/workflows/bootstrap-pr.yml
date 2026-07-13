@@ -1,4 +1,4 @@
-name: Build Alpha PR
+name: Build Real API 102 Module
 
 on:
   pull_request:
@@ -138,6 +138,31 @@ jobs:
               confirm.write_text(text, encoding='utf-8')
           PY
 
+      - name: Activate real libxposed API 102 entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENTRY="app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java"
+          test -f "$ENTRY"
+
+          META="app/src/main/resources/META-INF/xposed"
+          mkdir -p "$META"
+          printf '%s\n' 'io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule' > "$META/java_init.list"
+          printf '%s\n' 'com.android.providers.downloads' > "$META/scope.list"
+          cat > "$META/module.prop" <<'EOF'
+          minApiVersion=102
+          targetApiVersion=102
+          staticScope=false
+          autoHotReload=false
+          EOF
+
+          cat >> app/proguard-rules.pro <<'EOF'
+
+          # Loaded by literal name from META-INF/xposed/java_init.list.
+          -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule { public *; }
+          -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule$* { *; }
+          EOF
+
       - name: Normalize Android build toolchain
         shell: bash
         run: |
@@ -183,8 +208,8 @@ jobs:
                   applicationId = "io.github.zhanfg.sda"
                   minSdk = 26
                   targetSdk = 35
-                  versionCode = 2
-                  versionName = "0.1.1-alpha1"
+                  versionCode = 3
+                  versionName = "0.2.0-alpha2"
               }
 
               buildTypes {
@@ -229,7 +254,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Fix system bar inset handling" || true
+          git commit -m "Expand real API 102 module source" || true
           git push origin HEAD:${{ github.head_ref }}
 
       - uses: actions/setup-java@v4
@@ -249,16 +274,26 @@ jobs:
       - name: Build APKs
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
 
+      - name: Verify module packaging
+        run: |
+          set -euo pipefail
+          for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
+            test "$(unzip -p "$apk" META-INF/xposed/java_init.list | tr -d '\r\n')" = \
+              "io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule"
+            unzip -p "$apk" META-INF/xposed/module.prop | grep -qx 'targetApiVersion=102'
+            unzip -l "$apk" | grep -q 'classes.dex'
+          done
+
       - name: Prepare artifacts
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-alpha1-debug.apk
-          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-alpha1-insets-fixed.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-0.2.0-alpha2-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-0.2.0-alpha2.apk
           cd dist
           sha256sum *.apk > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-alpha1-insets-fixed
+          name: SystemDownloadAccelerator-0.2.0-alpha2
           path: dist/*
           if-no-files-found: error
