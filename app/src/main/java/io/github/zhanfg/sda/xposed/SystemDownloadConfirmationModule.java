@@ -105,7 +105,6 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
 
                         ensureDecisionReceiver(context);
 
-                        // Pause immediately after insertion, before DownloadService/JobScheduler starts work.
                         ContentValues pause = new ContentValues();
                         pause.put("control", 1);
                         update.invoke(provider, downloadUri, pause, null, null);
@@ -130,8 +129,12 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
                         MAIN.postDelayed(() -> {
                             PendingDownload timedOut = PENDING.remove(token);
                             if (timedOut != null) {
-                                timedOut.resume();
-                                log(Log.WARN, TAG, "Confirmation timed out; download resumed");
+                                try {
+                                    timedOut.resume();
+                                    log(Log.WARN, TAG, "Confirmation timed out; download resumed");
+                                } catch (Throwable error) {
+                                    log(Log.ERROR, TAG, "Failed to resume timed-out download", error);
+                                }
                             }
                         }, FAILSAFE_RESUME_MS);
 
@@ -146,8 +149,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
     }
 
     private boolean shouldBypass(ContentValues values) {
-        // Internal/system maintenance rows and module-generated resume operations must not re-prompt.
-        if (values.getAsBoolean("sda_bypass_confirmation") == Boolean.TRUE) {
+        if (Boolean.TRUE.equals(values.getAsBoolean("sda_bypass_confirmation"))) {
             values.remove("sda_bypass_confirmation");
             return true;
         }
