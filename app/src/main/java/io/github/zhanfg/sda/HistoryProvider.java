@@ -3,19 +3,22 @@ package io.github.zhanfg.sda;
 import android.content.ContentProvider;
 import android.content.ContentUris;
 import android.content.ContentValues;
+import android.content.SharedPreferences;
 import android.content.UriMatcher;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.net.Uri;
 import android.os.Binder;
+import android.os.Bundle;
 import android.os.Process;
+import android.os.SystemClock;
 
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-/** Stores the DownloadProvider history mirrored by the LSPosed hook. */
+/** Stores the DownloadProvider history and coordinates source-app confirmation handoff. */
 public final class HistoryProvider extends ContentProvider {
     public static final String AUTHORITY = "io.github.zhanfg.sda.history";
     public static final Uri RECORDS_URI = Uri.parse("content://" + AUTHORITY + "/records");
@@ -24,6 +27,8 @@ public final class HistoryProvider extends ContentProvider {
     private static final int RECORD = 2;
     private static final String DOWNLOADS_PACKAGE = "com.android.providers.downloads";
     private static final String TABLE = "records";
+    private static final String BRIDGE_PREFS = "in_app_confirmation_bridge";
+    private static final long MARKER_TTL_MS = 15_000L;
 
     private static final Set<String> ALLOWED_COLUMNS = new HashSet<>(Arrays.asList(
             "download_id", "title", "source_url", "source_package", "mime_type",
@@ -32,6 +37,7 @@ public final class HistoryProvider extends ContentProvider {
     ));
 
     private final UriMatcher matcher = new UriMatcher(UriMatcher.NO_MATCH);
+    private final Object bridgeLock = new Object();
     private Database database;
 
     public HistoryProvider() {
@@ -50,6 +56,54 @@ public final class HistoryProvider extends ContentProvider {
         return matcher.match(uri) == RECORD
                 ? "vnd.android.cursor.item/vnd.sda.download"
                 : "vnd.android.cursor.dir/vnd.sda.download";
+    }
+
+    @Override
+    public Bundle call(String method, String arg, Bundle extras) {
+        if ("mark_in_app_confirmation".equals(method)) {
+            enforcePackageOwnedByCaller(arg);
+            Bundle result = new Bundle();
+            synchronized (bridgeLock) {
+                SharedPreferences prefs = providerContext().getSharedPreferences(
+                        BRIDGE_PREFS, android.content.Context.MODE_PRIVATE);
+                int count = prefs.getInt(countKey(arg), 0);
+                boolean committed = prefs.edit()
+                        .putInt(countKey(arg), Math.min(8, count + 1))
+                        .putLong(timeKey(arg), SystemClock.elapsedRealtime())
+                        .commit();
+                result.putBoolean("marked", committed);
+            }
+            return result;
+        }
+
+        if ("consume_in_app_confirmation".equals(method)) {
+            enforceCaller(true);
+            Bundle result = new Bundle();
+            boolean consumed = false;
+            synchronized (bridgeLock) {
+                SharedPreferences prefs = providerContext().getSharedPreferences(
+                        BRIDGE_PREFS, android.content.Context.MODE_PRIVATE);
+                int count = prefs.getInt(countKey(arg), 0);
+                long timestamp = prefs.getLong(timeKey(arg), 0L);
+                long age = SystemClock.elapsedRealtime() - timestamp;
+                if (count > 0 && age >= 0 && age <= MARKER_TTL_MS) {
+                    SharedPreferences.Editor editor = prefs.edit();
+                    if (count <= 1) {
+                        editor.remove(countKey(arg));
+                        editor.remove(timeKey(arg));
+                    } else {
+                        editor.putInt(countKey(arg), count - 1);
+                    }
+                    consumed = editor.commit();
+                } else if (count > 0) {
+                    prefs.edit().remove(countKey(arg)).remove(timeKey(arg)).commit();
+                }
+            }
+            result.putBoolean("consumed", consumed);
+            return result;
+        }
+
+        return super.call(method, arg, extras);
     }
 
     @Override
@@ -150,21 +204,35 @@ public final class HistoryProvider extends ContentProvider {
         return output;
     }
 
+    private void enforcePackageOwnedByCaller(String packageName) {
+        if (packageName == null || packageName.isEmpty()) {
+            throw new SecurityException("Missing caller package");
+        }
+        int uid = Binder.getCallingUid();
+        if (uid == Process.myUid() || uid == Process.SYSTEM_UID) {
+            return;
+        }
+        String[] packages = providerContext().getPackageManager().getPackagesForUid(uid);
+        if (packages != null) {
+            for (String name : packages) {
+                if (packageName.equals(name)) {
+                    return;
+                }
+            }
+        }
+        throw new SecurityException("Package " + packageName + " does not belong to uid " + uid);
+    }
+
     private void enforceCaller(boolean write) {
         int uid = Binder.getCallingUid();
-        if (uid == Process.myUid()) {
+        if (uid == Process.myUid() || uid == Process.SYSTEM_UID) {
             return;
         }
-        if (uid == Process.SYSTEM_UID) {
-            return;
-        }
-        if (getContext() != null) {
-            String[] packages = getContext().getPackageManager().getPackagesForUid(uid);
-            if (packages != null) {
-                for (String name : packages) {
-                    if (DOWNLOADS_PACKAGE.equals(name)) {
-                        return;
-                    }
+        String[] packages = providerContext().getPackageManager().getPackagesForUid(uid);
+        if (packages != null) {
+            for (String name : packages) {
+                if (DOWNLOADS_PACKAGE.equals(name)) {
+                    return;
                 }
             }
         }
@@ -187,6 +255,14 @@ public final class HistoryProvider extends ContentProvider {
             throw new IllegalStateException("Provider context unavailable");
         }
         return getContext();
+    }
+
+    private static String countKey(String packageName) {
+        return "count:" + packageName;
+    }
+
+    private static String timeKey(String packageName) {
+        return "time:" + packageName;
     }
 
     private static String appendSelection(String selection, String clause) {
