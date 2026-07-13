@@ -6,11 +6,11 @@
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowDisablePreview">true</item>
         <item name="android:backgroundDimEnabled">true</item>
-        <item name="android:windowAnimationStyle">@style/Animation.SDA.None</item>
+        <item name="android:windowAnimationStyle">@style/Animation_SDA_None</item>
         <item name="android:fontFamily">sans</item>
     </style>
 
-    <style name="Animation.SDA.None">
+    <style name="Animation_SDA_None">
         <item name="android:activityOpenEnterAnimation">@null</item>
         <item name="android:activityOpenExitAnimation">@null</item>
         <item name="android:activityCloseEnterAnimation">@null</item>
