@@ -325,13 +325,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          index=0
           for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
-            test "$(unzip -p "$apk" META-INF/xposed/java_init.list | tr -d '\r\n')" = \
+            index=$((index + 1))
+            unzip -p "$apk" META-INF/xposed/java_init.list > "/tmp/java-init-$index.txt"
+            unzip -p "$apk" META-INF/xposed/scope.list > "/tmp/scope-$index.txt"
+            unzip -p "$apk" META-INF/xposed/module.prop > "/tmp/module-$index.txt"
+            unzip -p "$apk" classes.dex > "/tmp/classes-$index.dex"
+            test "$(tr -d '\r\n' < "/tmp/java-init-$index.txt")" = \
               "io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule"
-            unzip -p "$apk" META-INF/xposed/scope.list | grep -qx 'mark.via.gp'
-            unzip -p "$apk" META-INF/xposed/module.prop | grep -qx 'targetApiVersion=102'
-            unzip -p "$apk" classes.dex | strings | grep -q 'InterceptDownloadConfirmActivity'
-            unzip -p "$apk" classes.dex | strings | grep -q 'Download confirmation hook installed in'
+            grep -qx 'mark.via.gp' "/tmp/scope-$index.txt"
+            grep -qx 'targetApiVersion=102' "/tmp/module-$index.txt"
+            strings "/tmp/classes-$index.dex" > "/tmp/classes-$index.txt"
+            grep -Fq 'InterceptDownloadConfirmActivity' "/tmp/classes-$index.txt"
+            grep -Fq 'Download confirmation hook installed in' "/tmp/classes-$index.txt"
           done
 
       - name: Prepare artifacts
