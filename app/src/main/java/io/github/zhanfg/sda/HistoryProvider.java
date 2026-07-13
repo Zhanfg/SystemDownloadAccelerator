@@ -41,7 +41,7 @@ public final class HistoryProvider extends ContentProvider {
 
     @Override
     public boolean onCreate() {
-        database = new Database(requireContext());
+        database = new Database(providerContext());
         return true;
     }
 
@@ -182,7 +182,7 @@ public final class HistoryProvider extends ContentProvider {
         }
     }
 
-    private android.content.Context requireContext() {
+    private android.content.Context providerContext() {
         if (getContext() == null) {
             throw new IllegalStateException("Provider context unavailable");
         }
