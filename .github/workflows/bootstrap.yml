@@ -1,4 +1,4 @@
-name: Expand and Patch Alpha
+name: Expand Real API 102 Engine
 
 on:
   push:
@@ -106,31 +106,55 @@ jobs:
               text,
               count=1,
           )
-          if count != 1:
+          if count != 1 and 'SystemBarInsets.apply(rootView)' not in text:
               raise SystemExit('MainActivity setContentView pattern not found')
           main.write_text(text, encoding='utf-8')
 
           confirm = root / 'DownloadConfirmActivity.java'
           text = confirm.read_text(encoding='utf-8')
-          pattern = r'(?:this\.)?setContentView\((?:this\.)?build\(([^;]+?)\)\);'
-          match = re.search(pattern, text)
-          if not match:
-              raise SystemExit('DownloadConfirmActivity setContentView pattern not found')
-          arg = match.group(1)
-          replacement = f'''android.view.View rootView = build({arg});
+          if 'SystemBarInsets.apply(rootView)' not in text:
+              pattern = r'(?:this\.)?setContentView\((?:this\.)?build\(([^;]+?)\)\);'
+              match = re.search(pattern, text)
+              if not match:
+                  raise SystemExit('DownloadConfirmActivity setContentView pattern not found')
+              arg = match.group(1)
+              replacement = f'''android.view.View rootView = build({arg});
                   SystemBarInsets.apply(rootView);
                   setContentView(rootView);'''
-          text = re.sub(pattern, replacement, text, count=1)
+              text = re.sub(pattern, replacement, text, count=1)
           confirm.write_text(text, encoding='utf-8')
           PY
 
-      - name: Commit expanded patched source
+      - name: Activate real libxposed entry
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .bootstrap .github/workflows/bootstrap.yml .ci-retry*
+          META="app/src/main/resources/META-INF/xposed"
+          mkdir -p "$META"
+          printf '%s\n' 'io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule' > "$META/java_init.list"
+          printf '%s\n' 'com.android.providers.downloads' > "$META/scope.list"
+          cat > "$META/module.prop" <<'EOF'
+          minApiVersion=102
+          targetApiVersion=102
+          staticScope=false
+          autoHotReload=false
+          exceptionMode=protective
+          EOF
+
+          cat >> app/proguard-rules.pro <<'EOF'
+
+          # The modern Xposed entry is loaded by its literal name from META-INF/xposed/java_init.list.
+          -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule { public *; }
+          -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule$* { *; }
+          EOF
+
+      - name: Commit expanded real module source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .bootstrap .github/workflows/bootstrap.yml .ci-retry* .ci-insets-fix
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Fix system bar inset handling"
+          git commit -m "Implement real libxposed API 102 range engine"
           git push
