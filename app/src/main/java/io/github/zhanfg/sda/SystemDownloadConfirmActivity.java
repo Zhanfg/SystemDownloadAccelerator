@@ -172,15 +172,18 @@ public final class SystemDownloadConfirmActivity extends Activity {
         if (decisionSent) return;
         decisionSent = true;
         if (pendingRebuild != null) mainHandler.removeCallbacks(pendingRebuild);
+
         if (allow) primeLiveUpdate();
-        Runnable complete = () -> {
-            Intent decision = new Intent(ACTION_DECISION);
-            decision.setPackage(DOWNLOAD_PROVIDER);
-            decision.putExtra("token", token);
-            decision.putExtra("decision", allow ? 1 : 0);
-            sendBroadcast(decision);
-            finishWithoutAnimation();
-        };
+
+        // The provider decision is dispatched before animation. If ColorOS interrupts or destroys the
+        // transparent host during the exit transition, the real download has already been resumed.
+        Intent decision = new Intent(ACTION_DECISION);
+        decision.setPackage(DOWNLOAD_PROVIDER);
+        decision.putExtra("token", token);
+        decision.putExtra("decision", allow ? 1 : 0);
+        sendBroadcast(decision);
+
+        Runnable complete = this::finishWithoutAnimation;
         if (renderer != null && root != null) renderer.animateOut(root, allow, complete);
         else complete.run();
     }
