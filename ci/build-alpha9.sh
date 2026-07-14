@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Preserve V9 sources because the legacy bootstrap archive intentionally contains an older baseline.
 SAVE=/tmp/sda-alpha9-sources
 rm -rf "$SAVE"
 mkdir -p "$SAVE/ui" "$SAVE/xposed"
@@ -15,10 +14,7 @@ cp app/src/main/java/io/github/zhanfg/sda/ui/MiuixDownloadRenderer.java "$SAVE/u
 cp app/src/main/java/io/github/zhanfg/sda/xposed/HistoryMirrorModule.java "$SAVE/xposed/"
 cp app/src/main/java/io/github/zhanfg/sda/xposed/SystemDownloadConfirmationModule.java "$SAVE/xposed/"
 
-# The Alpha 8 bootstrap compiles without AndroidX; hide the V9-only provider for that staging build.
 rm -f app/src/main/java/io/github/zhanfg/sda/DownloadLiveUpdateProvider.java
-
-# Reuse the complete Alpha 8 bootstrap and UI setup, then replace the V9-specific layer.
 bash ci/build-alpha8.sh
 
 SRC=app/src/main/java/io/github/zhanfg/sda
@@ -42,7 +38,6 @@ for permission in [
     if permission not in xml:
         xml = xml.replace('<application',
             f'    <uses-permission android:name="{permission}" />\n\n    <application', 1)
-
 activity = '''<activity
             android:name=".SystemDownloadConfirmActivity"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density|uiMode"
@@ -56,7 +51,6 @@ activity = '''<activity
             android:theme="@style/Theme.SDA.Translucent" />'''
 xml = re.sub(r'<activity\s+android:name="\.SystemDownloadConfirmActivity".*?/>',
              activity, xml, count=1, flags=re.S)
-
 provider = '''<provider
             android:name=".DownloadLiveUpdateProvider"
             android:authorities="io.github.zhanfg.sda.liveupdate"
@@ -88,13 +82,17 @@ cat >> app/proguard-rules.pro <<'EOF'
 -keep class io.github.zhanfg.sda.ui.AdaptiveWindowInfo$* { *; }
 EOF
 
+cat > build.gradle.kts <<'EOF'
+plugins {
+    id("com.android.application") version "8.9.1" apply false
+}
+EOF
 cat > gradle.properties <<'EOF'
 org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
 android.useAndroidX=true
 android.nonTransitiveRClass=true
 android.suppressUnsupportedCompileSdk=36
 EOF
-
 cat > app/build.gradle.kts <<'EOF'
 plugins {
     id("com.android.application")
