@@ -1,4 +1,4 @@
-name: Build Alpha 9 Live Update Motion
+name: Build Alpha 10 Live Update Dismissal
 
 on:
   pull_request:
@@ -28,20 +28,20 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Build and verify Alpha 9
+      - name: Build and verify Alpha 10
         id: build
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
-          bash ci/build-alpha9.sh 2>&1 | tee build-alpha9.log
+          bash ci/build-alpha10.sh 2>&1 | tee build-alpha10.log
 
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-alpha9-build-log
-          path: build-alpha9.log
+          name: SystemDownloadAccelerator-alpha10-build-log
+          path: build-alpha10.log
           if-no-files-found: warn
 
       - name: Stop after build failure
@@ -50,6 +50,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-0.2.7-alpha9
+          name: SystemDownloadAccelerator-0.2.8-alpha10
           path: dist/*
           if-no-files-found: error
