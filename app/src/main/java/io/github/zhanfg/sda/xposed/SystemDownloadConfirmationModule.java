@@ -288,13 +288,12 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
                 if (status == 193 || control == 1) {
                     writeRunnableState();
                     kickScheduler();
-                    log(Log.WARN, TAG,
-                            "Paused row repaired after confirmation: " + uri);
+                    Log.w(TAG, "Paused row repaired after confirmation: " + uri);
                 } else if (status == 190 || status == 194 || status == 195 || status == 196) {
                     kickScheduler();
                 }
             } catch (Throwable error) {
-                log(Log.WARN, TAG, "Unable to verify resume state for " + uri, error);
+                Log.w(TAG, "Unable to verify resume state for " + uri, error);
             } finally {
                 if (cursor != null) cursor.close();
             }
