@@ -144,7 +144,7 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core:1.19.0")
+    implementation("androidx.core:core:1.17.0-beta01")
     compileOnly("io.github.libxposed:api:102.0.0")
 }
 EOF
