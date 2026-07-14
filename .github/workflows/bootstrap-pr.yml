@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          bash ci/build-alpha12.sh 2>&1 | tee build-alpha12.log
+          bash ci/build-alpha12-fixed.sh 2>&1 | tee build-alpha12.log
 
       - name: Upload build diagnostics
         if: always()
