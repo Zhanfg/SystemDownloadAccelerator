@@ -1,6 +1,7 @@
 package io.github.zhanfg.sda;
 
 import android.Manifest;
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -16,6 +17,8 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Process;
 import android.os.SystemClock;
 
@@ -28,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Posts one stable Android 16 Live Update / promoted ongoing notification per real system download.
- * The DownloadProvider process only sends state snapshots; all notifications belong to this app.
+ * Completed activities remain visible briefly for the success transition, then are removed reliably.
  */
 public final class DownloadLiveUpdateProvider extends ContentProvider {
     public static final String AUTHORITY = "io.github.zhanfg.sda.liveupdate";
@@ -40,8 +43,11 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
             "io.github.zhanfg.sda.action.DOWNLOAD_CONTROL";
     private static final long MIN_NOTIFY_INTERVAL_MS = 500L;
     private static final long SPEED_TEXT_INTERVAL_MS = 1_000L;
+    private static final long SUCCESS_VISIBLE_MS = 6_000L;
 
     private static final Map<Long, Sample> SAMPLES = new ConcurrentHashMap<>();
+    private static final Map<Long, Runnable> DISMISS_RUNNABLES = new ConcurrentHashMap<>();
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     @Override
     public boolean onCreate() {
@@ -53,23 +59,16 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
     public Bundle call(String method, String arg, Bundle extras) {
         enforceDownloadsCaller();
         if ("update".equals(method)) {
-            if (extras != null) {
-                updateNotification(extras, false);
-            }
+            if (extras != null) updateNotification(extras, false);
             return Bundle.EMPTY;
         }
         if ("prime".equals(method)) {
-            if (extras != null) {
-                updateNotification(extras, true);
-            }
+            if (extras != null) updateNotification(extras, true);
             return Bundle.EMPTY;
         }
         if ("cancel".equals(method)) {
             long id = extras == null ? -1L : extras.getLong("download_id", -1L);
-            if (id >= 0) {
-                NotificationManagerCompat.from(providerContext()).cancel(notificationId(id));
-                SAMPLES.remove(id);
-            }
+            if (id >= 0) cancelNotification(providerContext(), id);
             return Bundle.EMPTY;
         }
         return super.call(method, arg, extras);
@@ -78,9 +77,7 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
     private void updateNotification(Bundle state, boolean primedFromDialog) {
         Context context = providerContext();
         long id = state.getLong("download_id", -1L);
-        if (id < 0 || !notificationsAllowed(context)) {
-            return;
-        }
+        if (id < 0 || !notificationsAllowed(context)) return;
 
         String title = value(state.getString("title"), "download.bin");
         String mime = value(state.getString("mime_type"), "application/octet-stream");
@@ -89,9 +86,9 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
         long total = state.getLong("total_bytes", -1L);
         long current = Math.max(0L, state.getLong("current_bytes", 0L));
         int status = state.getInt("status", 190);
-        if (primedFromDialog) {
-            status = 192;
-        }
+        if (primedFromDialog) status = 192;
+
+        if (status != 200) cancelScheduledDismiss(context, id);
 
         long now = SystemClock.elapsedRealtime();
         Sample sample = SAMPLES.computeIfAbsent(id, ignored -> new Sample());
@@ -113,32 +110,32 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
                 .setContentTitle(title)
                 .setColor(resolveAccent(context))
                 .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-                .setOnlyAlertOnce(!isTerminal(status))
-                .setSilent(!isTerminal(status))
+                .setOnlyAlertOnce(true)
+                .setSilent(true)
                 .setAutoCancel(isTerminal(status))
                 .setOngoing(isActive(status))
                 .setContentIntent(openManagerIntent(context, id));
 
-        if (Build.VERSION.SDK_INT >= 36 && isActive(status)) {
-            builder.setRequestPromotedOngoing(true);
+        if (Build.VERSION.SDK_INT >= 36) {
+            builder.setRequestPromotedOngoing(isActive(status));
+            builder.setShortCriticalText(shortText(status, percent));
         }
 
-        String shortText = shortText(status, percent);
-        if (Build.VERSION.SDK_INT >= 36) {
-            builder.setShortCriticalText(shortText);
+        if (status == 200) {
+            builder.setTimeoutAfter(SUCCESS_VISIBLE_MS);
         }
 
         if (total > 0) {
+            int displayedPercent = status == 200 ? 100 : percent;
             NotificationCompat.ProgressStyle style = new NotificationCompat.ProgressStyle()
-                    .setProgress(percent)
+                    .setProgress(displayedPercent)
                     .setStyledByProgress(true);
             builder.setStyle(style);
         } else if (isActive(status)) {
             builder.setProgress(0, 0, true);
         }
 
-        String content = contentText(status, percent, speed, remainingSeconds, error);
-        builder.setContentText(content);
+        builder.setContentText(contentText(status, percent, speed, remainingSeconds, error));
 
         if (status == 192) {
             builder.addAction(0, "暂停", controlIntent(context, id, "pause"));
@@ -148,9 +145,7 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
             builder.addAction(0, "取消", controlIntent(context, id, "cancel"));
         } else if (status == 200) {
             PendingIntent open = openFileIntent(context, id, localUri, mime);
-            if (open != null) {
-                builder.addAction(0, "打开", open);
-            }
+            if (open != null) builder.addAction(0, "打开", open);
             builder.addAction(0, "记录", openManagerIntent(context, id));
         } else if (status >= 400) {
             builder.addAction(0, "重试", controlIntent(context, id, "retry"));
@@ -163,9 +158,56 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
         sample.status = status;
         sample.lastPercent = percent;
         sample.lastNotifyAt = now;
-        if (isTerminal(status)) {
-            sample.speedBytesPerSecond = 0d;
+        if (isTerminal(status)) sample.speedBytesPerSecond = 0d;
+
+        if (status == 200) scheduleCompletedDismiss(context, id);
+    }
+
+    private static void scheduleCompletedDismiss(Context context, long id) {
+        cancelScheduledDismiss(context, id);
+        int notificationId = notificationId(id);
+        Runnable runnable = () -> {
+            NotificationManagerCompat.from(context.getApplicationContext()).cancel(notificationId);
+            SAMPLES.remove(id);
+            DISMISS_RUNNABLES.remove(id);
+        };
+        DISMISS_RUNNABLES.put(id, runnable);
+        MAIN.postDelayed(runnable, SUCCESS_VISIBLE_MS);
+
+        AlarmManager alarmManager = context.getSystemService(AlarmManager.class);
+        if (alarmManager != null) {
+            long triggerAt = SystemClock.elapsedRealtime() + SUCCESS_VISIBLE_MS;
+            alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerAt,
+                    dismissPendingIntent(context, id)
+            );
         }
+    }
+
+    private static void cancelScheduledDismiss(Context context, long id) {
+        Runnable runnable = DISMISS_RUNNABLES.remove(id);
+        if (runnable != null) MAIN.removeCallbacks(runnable);
+        AlarmManager alarmManager = context.getSystemService(AlarmManager.class);
+        if (alarmManager != null) alarmManager.cancel(dismissPendingIntent(context, id));
+    }
+
+    private static void cancelNotification(Context context, long id) {
+        cancelScheduledDismiss(context, id);
+        NotificationManagerCompat.from(context).cancel(notificationId(id));
+        SAMPLES.remove(id);
+    }
+
+    private static PendingIntent dismissPendingIntent(Context context, long id) {
+        Intent intent = new Intent(context, LiveUpdateDismissReceiver.class)
+                .setAction(LiveUpdateDismissReceiver.ACTION)
+                .putExtra(LiveUpdateDismissReceiver.EXTRA_NOTIFICATION_ID, notificationId(id));
+        return PendingIntent.getBroadcast(
+                context,
+                (int) (id ^ 0x6D51),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
     }
 
     private static double updateSpeedSample(Sample sample, long current, long now) {
@@ -192,35 +234,17 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
 
     private static String contentText(int status, int percent, double speed,
                                       long remainingSeconds, String error) {
-        if (status == 200) {
-            return "下载完成 · 文件已写入";
-        }
-        if (status >= 400) {
-            return value(error, "下载失败");
-        }
-        if (status == 193) {
-            return percent >= 0 ? "已暂停 · " + percent + "%" : "已暂停";
-        }
-        if (status == 194) {
-            return "等待重试";
-        }
-        if (status == 195) {
-            return "等待网络连接";
-        }
-        if (status == 196) {
-            return "等待其他下载完成";
-        }
-        if (percent < 0) {
-            return "正在连接并获取文件信息…";
-        }
+        if (status == 200) return "下载完成 · 即将自动收起";
+        if (status >= 400) return value(error, "下载失败");
+        if (status == 193) return percent >= 0 ? "已暂停 · " + percent + "%" : "已暂停";
+        if (status == 194) return "等待重试";
+        if (status == 195) return "等待网络连接";
+        if (status == 196) return "等待其他下载完成";
+        if (percent < 0) return "正在连接并获取文件信息…";
         StringBuilder text = new StringBuilder();
         text.append(percent).append('%');
-        if (speed > 1024d) {
-            text.append(" · ").append(formatSpeed(speed));
-        }
-        if (remainingSeconds > 0L) {
-            text.append(" · ").append(formatRemaining(remainingSeconds));
-        }
+        if (speed > 1024d) text.append(" · ").append(formatSpeed(speed));
+        if (remainingSeconds > 0L) text.append(" · ").append(formatRemaining(remainingSeconds));
         return text.toString();
     }
 
@@ -290,9 +314,7 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
         channel.enableVibration(false);
         channel.setShowBadge(false);
         NotificationManager manager = context.getSystemService(NotificationManager.class);
-        if (manager != null) {
-            manager.createNotificationChannel(channel);
-        }
+        if (manager != null) manager.createNotificationChannel(channel);
     }
 
     private static boolean notificationsAllowed(Context context) {
@@ -323,8 +345,7 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
         if (Build.VERSION.SDK_INT >= 31) {
             try {
                 return context.getColor(android.R.color.system_accent1_600);
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) { }
         }
         return Color.rgb(42, 122, 143);
     }
@@ -354,7 +375,8 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
             value /= 1024d;
             unit++;
         }
-        return String.format(Locale.ROOT, value >= 100d ? "%.0f %s" : "%.1f %s", value, units[unit]);
+        return String.format(Locale.ROOT,
+                value >= 100d ? "%.0f %s" : "%.1f %s", value, units[unit]);
     }
 
     private static String formatRemaining(long seconds) {
