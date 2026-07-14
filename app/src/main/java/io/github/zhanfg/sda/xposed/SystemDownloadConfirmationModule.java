@@ -1,11 +1,7 @@
 package io.github.zhanfg.sda.xposed;
 
-import android.app.ActivityOptions;
-import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.ContentProvider;
-import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -28,23 +24,18 @@ import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
 
-/** Central DownloadProvider gate. Source-process dialogs are preferred; a translucent Activity is fallback. */
+/** System DownloadProvider gate with a root-launched transparent confirmation host. */
 public final class SystemDownloadConfirmationModule extends XposedModule {
     private static final String TAG = "SysDownloadConfirm";
     private static final String TARGET_PACKAGE = "com.android.providers.downloads";
-    private static final String MODULE_PACKAGE = "io.github.zhanfg.sda";
-    private static final String CONFIRM_ACTIVITY =
-            "io.github.zhanfg.sda.SystemDownloadConfirmActivity";
     private static final String ACTION_DECISION =
             "io.github.zhanfg.sda.action.SYSTEM_DOWNLOAD_DECISION";
-    private static final String ACTION_IN_APP_DECISION =
-            "io.github.zhanfg.sda.action.IN_APP_DOWNLOAD_DECISION";
-    private static final Uri BRIDGE_URI = Uri.parse("content://io.github.zhanfg.sda.history");
+    private static final Uri ROOT_BRIDGE_URI =
+            Uri.parse("content://io.github.zhanfg.sda.rootbridge");
     private static final long FAILSAFE_RESUME_MS = 120_000L;
 
     private static final AtomicBoolean RECEIVER_REGISTERED = new AtomicBoolean(false);
-    private static final Map<String, PendingDownload> PENDING_BY_TOKEN = new ConcurrentHashMap<>();
-    private static final Map<Long, PendingDownload> PENDING_BY_ID = new ConcurrentHashMap<>();
+    private static final Map<String, PendingDownload> PENDING = new ConcurrentHashMap<>();
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
@@ -71,14 +62,14 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
             delete.setAccessible(true);
 
             hook(insert)
-                    .setId("sda.system-download-confirmation")
+                    .setId("sda.system-download-confirmation.v8")
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
-                        ContentValues originalValues = (ContentValues) chain.getArg(1);
-                        ContentValues snapshot = originalValues == null
+                        ContentValues input = (ContentValues) chain.getArg(1);
+                        ContentValues snapshot = input == null
                                 ? new ContentValues()
-                                : new ContentValues(originalValues);
+                                : new ContentValues(input);
 
                         Object result = chain.proceed();
                         if (!(result instanceof Uri)) {
@@ -98,79 +89,62 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
                         pause.put("control", 1);
                         update.invoke(provider, downloadUri, pause, null, null);
 
-                        long downloadId = safeId(downloadUri);
                         String token = createToken(downloadUri);
                         PendingDownload pending = new PendingDownload(
-                                token,
-                                downloadId,
-                                provider,
-                                update,
-                                delete,
-                                downloadUri,
-                                snapshot
-                        );
-                        PENDING_BY_TOKEN.put(token, pending);
-                        if (downloadId >= 0) {
-                            PENDING_BY_ID.put(downloadId, pending);
-                        }
+                                token, provider, update, delete, downloadUri);
+                        PENDING.put(token, pending);
 
-                        String sourcePackage = safe(
-                                snapshot.getAsString("notificationpackage"), "");
-                        boolean handledInSourceApp = consumeInAppMarker(context, sourcePackage);
-                        if (handledInSourceApp) {
-                            scheduleTimeout(pending);
-                            log(Log.INFO, TAG,
-                                    "Download paused for in-app confirmation: " + downloadUri
-                                            + " source=" + sourcePackage);
-                            return result;
-                        }
-
-                        if (!openFallbackConfirmation(context, token, downloadUri, snapshot)) {
-                            removePending(pending);
+                        if (!launchThroughRootBridge(context, token, snapshot)) {
+                            PENDING.remove(token, pending);
                             pending.resume();
                             log(Log.WARN, TAG,
-                                    "Unable to open fallback confirmation UI; download resumed");
+                                    "Root UI bridge unavailable; download resumed without prompt");
                             return result;
                         }
 
                         scheduleTimeout(pending);
                         log(Log.INFO, TAG,
-                                "Download paused for fallback confirmation: " + downloadUri);
+                                "Download paused for privileged transparent confirmation: "
+                                        + downloadUri);
                         return result;
                     });
 
             log(Log.INFO, TAG,
-                    "Central confirmation gate installed; source-app dialogs preferred");
+                    "V8 central confirmation gate installed; root transparent host enabled");
         } catch (Throwable error) {
-            log(Log.ERROR, TAG, "Failed to install central confirmation hook", error);
+            log(Log.ERROR, TAG, "Failed to install V8 confirmation hook", error);
         }
     }
 
     private boolean shouldBypass(ContentValues values) {
-        if (Boolean.TRUE.equals(values.getAsBoolean("sda_bypass_confirmation"))) {
-            values.remove("sda_bypass_confirmation");
-            return true;
-        }
-        String uri = values.getAsString("uri");
-        return uri == null || uri.isEmpty();
+        String source = values.getAsString("uri");
+        return source == null || source.isEmpty();
     }
 
-    private boolean consumeInAppMarker(Context context, String sourcePackage) {
-        if (sourcePackage == null || sourcePackage.isEmpty()) {
-            return false;
-        }
+    private boolean launchThroughRootBridge(
+            Context context, String token, ContentValues values) {
+        Bundle request = new Bundle();
+        request.putString("file_name", resolveFileName(values));
+        request.putString("url", safe(values.getAsString("uri"), ""));
+        request.putString("source_package",
+                safe(values.getAsString("notificationpackage"), "系统应用"));
+        request.putString("mime_type",
+                safe(values.getAsString("mimetype"), "application/octet-stream"));
+        Long total = values.getAsLong("total_bytes");
+        request.putLong("file_size", total == null ? -1L : total);
+        request.putString("destination", resolveDestination(values));
+        request.putString("thread_mode", "自动 · 多线程可用时启用");
+
         try {
-            Bundle result = context.getContentResolver().call(
-                    BRIDGE_URI,
-                    "consume_in_app_confirmation",
-                    sourcePackage,
-                    null
+            Bundle response = context.getContentResolver().call(
+                    ROOT_BRIDGE_URI,
+                    "show_download_confirmation",
+                    token,
+                    request
             );
-            return result != null && result.getBoolean("consumed", false);
+            return response != null && response.getBoolean("scheduled", false);
         } catch (Throwable error) {
-            log(Log.WARN, TAG,
-                    "Unable to consume source-app confirmation marker for " + sourcePackage,
-                    error);
+            log(Log.ERROR, TAG, "Root UI bridge call failed", error);
             return false;
         }
     }
@@ -179,33 +153,21 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
         if (!RECEIVER_REGISTERED.compareAndSet(false, true)) {
             return;
         }
-
         BroadcastReceiver receiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context receiverContext, Intent intent) {
-                String action = intent.getAction();
-                PendingDownload pending;
-                if (ACTION_IN_APP_DECISION.equals(action)) {
-                    long id = intent.getLongExtra("download_id", -1L);
-                    pending = id < 0 ? null : PENDING_BY_ID.get(id);
-                } else if (ACTION_DECISION.equals(action)) {
-                    String token = intent.getStringExtra("token");
-                    pending = token == null ? null : PENDING_BY_TOKEN.get(token);
-                } else {
+                if (!ACTION_DECISION.equals(intent.getAction())) {
                     return;
                 }
-
+                String token = intent.getStringExtra("token");
+                PendingDownload pending = token == null ? null : PENDING.remove(token);
                 if (pending == null) {
                     return;
                 }
-                removePending(pending);
                 applyDecision(pending, intent.getIntExtra("decision", 0));
             }
         };
-
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(ACTION_DECISION);
-        filter.addAction(ACTION_IN_APP_DECISION);
+        IntentFilter filter = new IntentFilter(ACTION_DECISION);
         if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
         } else {
@@ -233,11 +195,9 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
 
     private void scheduleTimeout(PendingDownload pending) {
         MAIN.postDelayed(() -> {
-            PendingDownload current = PENDING_BY_TOKEN.get(pending.token);
-            if (current != pending) {
+            if (!PENDING.remove(pending.token, pending)) {
                 return;
             }
-            removePending(pending);
             try {
                 pending.resume();
                 log(Log.WARN, TAG, "Confirmation timed out; download resumed");
@@ -247,98 +207,47 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
         }, FAILSAFE_RESUME_MS);
     }
 
-    private static void removePending(PendingDownload pending) {
-        PENDING_BY_TOKEN.remove(pending.token, pending);
-        if (pending.downloadId >= 0) {
-            PENDING_BY_ID.remove(pending.downloadId, pending);
-        }
-    }
-
-    private boolean openFallbackConfirmation(
-            Context context, String token, Uri uri, ContentValues values) {
-        Intent activity = new Intent();
-        activity.setComponent(new ComponentName(MODULE_PACKAGE, CONFIRM_ACTIVITY));
-        activity.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        activity.putExtra("token", token);
-        activity.putExtra("download_uri", uri.toString());
-        activity.putExtra("source_package",
-                safe(values.getAsString("notificationpackage"), "系统应用"));
-        activity.putExtra("url", safe(values.getAsString("uri"), ""));
-        activity.putExtra("file_name", resolveFileName(values));
-        activity.putExtra("mime_type",
-                safe(values.getAsString("mimetype"), "application/octet-stream"));
-        Long total = values.getAsLong("total_bytes");
-        activity.putExtra("file_size", total == null ? -1L : total.longValue());
-
-        try {
-            context.startActivity(activity);
-            return true;
-        } catch (Throwable directError) {
-            log(Log.WARN, TAG,
-                    "Direct fallback Activity launch rejected; trying PendingIntent",
-                    directError);
-        }
-
-        try {
-            PendingIntent pendingIntent = PendingIntent.getActivity(
-                    context,
-                    token.hashCode(),
-                    activity,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-            );
-            if (Build.VERSION.SDK_INT >= 34) {
-                ActivityOptions options = ActivityOptions.makeBasic();
-                options.setPendingIntentBackgroundActivityStartMode(
-                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
-                );
-                pendingIntent.send(context, 0, null, null, null, null, options.toBundle());
-            } else {
-                pendingIntent.send();
-            }
-            return true;
-        } catch (Throwable pendingIntentError) {
-            log(Log.ERROR, TAG, "PendingIntent fallback launch failed", pendingIntentError);
-            return false;
-        }
-    }
-
     private static String resolveFileName(ContentValues values) {
         String title = values.getAsString("title");
         if (title != null && !title.trim().isEmpty()) {
             return title;
         }
         String hint = values.getAsString("hint");
-        if (hint != null && !hint.isEmpty()) {
-            try {
-                String last = Uri.parse(hint).getLastPathSegment();
-                if (last != null && !last.isEmpty()) {
-                    return last;
-                }
-            } catch (Throwable ignored) {
-            }
+        String fromHint = lastSegment(hint);
+        if (fromHint != null) {
+            return fromHint;
         }
-        String source = values.getAsString("uri");
-        if (source != null && !source.isEmpty()) {
-            try {
-                String last = Uri.parse(source).getLastPathSegment();
-                if (last != null && !last.isEmpty()) {
-                    return last;
-                }
-            } catch (Throwable ignored) {
-            }
-        }
-        return "download.bin";
+        String fromUrl = lastSegment(values.getAsString("uri"));
+        return fromUrl == null ? "download.bin" : fromUrl;
     }
 
-    private static long safeId(Uri uri) {
+    private static String resolveDestination(ContentValues values) {
+        String hint = values.getAsString("hint");
+        if (hint == null || hint.isEmpty()) {
+            return "内部存储 / Download";
+        }
         try {
-            return ContentUris.parseId(uri);
+            Uri uri = Uri.parse(hint);
+            String path = uri.getPath();
+            if (path == null || path.isEmpty()) {
+                return hint;
+            }
+            int index = path.indexOf("/Download");
+            return index >= 0 ? "内部存储" + path.substring(index) : path;
         } catch (Throwable ignored) {
-            return -1L;
+            return hint;
+        }
+    }
+
+    private static String lastSegment(String source) {
+        if (source == null || source.isEmpty()) {
+            return null;
+        }
+        try {
+            String segment = Uri.parse(source).getLastPathSegment();
+            return segment == null || segment.isEmpty() ? null : segment;
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -355,22 +264,18 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
 
     private static final class PendingDownload {
         final String token;
-        final long downloadId;
         final Object provider;
         final Method update;
         final Method delete;
         final Uri uri;
-        final ContentValues original;
 
-        PendingDownload(String token, long downloadId, Object provider,
-                        Method update, Method delete, Uri uri, ContentValues original) {
+        PendingDownload(String token, Object provider, Method update,
+                        Method delete, Uri uri) {
             this.token = token;
-            this.downloadId = downloadId;
             this.provider = provider;
             this.update = update;
             this.delete = delete;
             this.uri = uri;
-            this.original = original;
         }
 
         void resume() throws Exception {
