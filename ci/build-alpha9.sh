@@ -15,6 +15,9 @@ cp app/src/main/java/io/github/zhanfg/sda/ui/MiuixDownloadRenderer.java "$SAVE/u
 cp app/src/main/java/io/github/zhanfg/sda/xposed/HistoryMirrorModule.java "$SAVE/xposed/"
 cp app/src/main/java/io/github/zhanfg/sda/xposed/SystemDownloadConfirmationModule.java "$SAVE/xposed/"
 
+# The Alpha 8 bootstrap compiles without AndroidX; hide the V9-only provider for that staging build.
+rm -f app/src/main/java/io/github/zhanfg/sda/DownloadLiveUpdateProvider.java
+
 # Reuse the complete Alpha 8 bootstrap and UI setup, then replace the V9-specific layer.
 bash ci/build-alpha8.sh
 
