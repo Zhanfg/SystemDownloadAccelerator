@@ -5,11 +5,12 @@ import android.content.SharedPreferences;
 
 import java.util.Locale;
 
-/** Shared immutable state consumed by both Material and Miuix renderers. */
+/** Shared immutable state consumed by Material and Miuix renderers. */
 public final class DownloadUiState {
     private static final String PREFS = "pending_download_confirmations";
 
     public final String token;
+    public final long downloadId;
     public final String fileName;
     public final String url;
     public final String sourcePackage;
@@ -20,6 +21,7 @@ public final class DownloadUiState {
 
     private DownloadUiState(
             String token,
+            long downloadId,
             String fileName,
             String url,
             String sourcePackage,
@@ -29,6 +31,7 @@ public final class DownloadUiState {
             String threadMode
     ) {
         this.token = token;
+        this.downloadId = downloadId;
         this.fileName = value(fileName, "download.bin");
         this.url = value(url, "");
         this.sourcePackage = value(sourcePackage, "系统应用");
@@ -39,16 +42,13 @@ public final class DownloadUiState {
     }
 
     public static DownloadUiState consume(Context context, String token) {
-        if (token == null || !token.matches("[a-fA-F0-9]{16,160}")) {
-            return null;
-        }
+        if (token == null || !token.matches("[a-fA-F0-9]{16,160}")) return null;
         SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String prefix = token + ":";
-        if (!preferences.getBoolean(prefix + "present", false)) {
-            return null;
-        }
+        if (!preferences.getBoolean(prefix + "present", false)) return null;
         DownloadUiState state = new DownloadUiState(
                 token,
+                preferences.getLong(prefix + "download_id", -1L),
                 preferences.getString(prefix + "file_name", null),
                 preferences.getString(prefix + "url", null),
                 preferences.getString(prefix + "source_package", null),
@@ -59,6 +59,7 @@ public final class DownloadUiState {
         );
         preferences.edit()
                 .remove(prefix + "present")
+                .remove(prefix + "download_id")
                 .remove(prefix + "file_name")
                 .remove(prefix + "url")
                 .remove(prefix + "source_package")
@@ -75,6 +76,7 @@ public final class DownloadUiState {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .putBoolean(prefix + "present", true)
+                .putLong(prefix + "download_id", request.getLong("download_id", -1L))
                 .putString(prefix + "file_name", request.getString("file_name", "download.bin"))
                 .putString(prefix + "url", request.getString("url", ""))
                 .putString(prefix + "source_package", request.getString("source_package", "系统应用"))
@@ -86,12 +88,8 @@ public final class DownloadUiState {
     }
 
     public String formattedSize() {
-        if (fileSize < 0) {
-            return "开始后获取";
-        }
-        if (fileSize < 1024) {
-            return fileSize + " B";
-        }
+        if (fileSize < 0) return "开始后获取";
+        if (fileSize < 1024) return fileSize + " B";
         double value = fileSize;
         String[] units = {"B", "KiB", "MiB", "GiB", "TiB"};
         int unit = 0;
