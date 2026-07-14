@@ -2,6 +2,7 @@ package io.github.zhanfg.sda.xposed;
 
 import android.content.BroadcastReceiver;
 import android.content.ContentProvider;
+import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -41,9 +42,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
 
     @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
-        if (!TARGET_PACKAGE.equals(param.getPackageName())) {
-            return;
-        }
+        if (!TARGET_PACKAGE.equals(param.getPackageName())) return;
 
         try {
             Class<?> providerClass = Class.forName(
@@ -62,7 +61,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
             delete.setAccessible(true);
 
             hook(insert)
-                    .setId("sda.system-download-confirmation.v8")
+                    .setId("sda.system-download-confirmation.v9")
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -72,16 +71,12 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
                                 : new ContentValues(input);
 
                         Object result = chain.proceed();
-                        if (!(result instanceof Uri)) {
-                            return result;
-                        }
+                        if (!(result instanceof Uri)) return result;
 
                         Uri downloadUri = (Uri) result;
                         ContentProvider provider = (ContentProvider) chain.getThisObject();
                         Context context = provider.getContext();
-                        if (context == null || shouldBypass(snapshot)) {
-                            return result;
-                        }
+                        if (context == null || shouldBypass(snapshot)) return result;
 
                         ensureDecisionReceiver(context);
 
@@ -94,7 +89,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
                                 token, provider, update, delete, downloadUri);
                         PENDING.put(token, pending);
 
-                        if (!launchThroughRootBridge(context, token, snapshot)) {
+                        if (!launchThroughRootBridge(context, token, downloadUri, snapshot)) {
                             PENDING.remove(token, pending);
                             pending.resume();
                             log(Log.WARN, TAG,
@@ -104,15 +99,14 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
 
                         scheduleTimeout(pending);
                         log(Log.INFO, TAG,
-                                "Download paused for privileged transparent confirmation: "
-                                        + downloadUri);
+                                "Download paused for V9 animated confirmation: " + downloadUri);
                         return result;
                     });
 
             log(Log.INFO, TAG,
-                    "V8 central confirmation gate installed; root transparent host enabled");
+                    "V9 confirmation gate installed; animated Live Update handoff enabled");
         } catch (Throwable error) {
-            log(Log.ERROR, TAG, "Failed to install V8 confirmation hook", error);
+            log(Log.ERROR, TAG, "Failed to install V9 confirmation hook", error);
         }
     }
 
@@ -122,8 +116,9 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
     }
 
     private boolean launchThroughRootBridge(
-            Context context, String token, ContentValues values) {
+            Context context, String token, Uri downloadUri, ContentValues values) {
         Bundle request = new Bundle();
+        request.putLong("download_id", parseId(downloadUri));
         request.putString("file_name", resolveFileName(values));
         request.putString("url", safe(values.getAsString("uri"), ""));
         request.putString("source_package",
@@ -150,20 +145,14 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
     }
 
     private void ensureDecisionReceiver(Context context) {
-        if (!RECEIVER_REGISTERED.compareAndSet(false, true)) {
-            return;
-        }
+        if (!RECEIVER_REGISTERED.compareAndSet(false, true)) return;
         BroadcastReceiver receiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context receiverContext, Intent intent) {
-                if (!ACTION_DECISION.equals(intent.getAction())) {
-                    return;
-                }
+                if (!ACTION_DECISION.equals(intent.getAction())) return;
                 String token = intent.getStringExtra("token");
                 PendingDownload pending = token == null ? null : PENDING.remove(token);
-                if (pending == null) {
-                    return;
-                }
+                if (pending == null) return;
                 applyDecision(pending, intent.getIntExtra("decision", 0));
             }
         };
@@ -186,18 +175,13 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
             }
         } catch (Throwable error) {
             log(Log.ERROR, TAG, "Failed to apply confirmation decision", error);
-            try {
-                pending.resume();
-            } catch (Throwable ignored) {
-            }
+            try { pending.resume(); } catch (Throwable ignored) { }
         }
     }
 
     private void scheduleTimeout(PendingDownload pending) {
         MAIN.postDelayed(() -> {
-            if (!PENDING.remove(pending.token, pending)) {
-                return;
-            }
+            if (!PENDING.remove(pending.token, pending)) return;
             try {
                 pending.resume();
                 log(Log.WARN, TAG, "Confirmation timed out; download resumed");
@@ -207,31 +191,27 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
         }, FAILSAFE_RESUME_MS);
     }
 
+    private static long parseId(Uri uri) {
+        try { return ContentUris.parseId(uri); }
+        catch (Throwable ignored) { return -1L; }
+    }
+
     private static String resolveFileName(ContentValues values) {
         String title = values.getAsString("title");
-        if (title != null && !title.trim().isEmpty()) {
-            return title;
-        }
-        String hint = values.getAsString("hint");
-        String fromHint = lastSegment(hint);
-        if (fromHint != null) {
-            return fromHint;
-        }
+        if (title != null && !title.trim().isEmpty()) return title;
+        String fromHint = lastSegment(values.getAsString("hint"));
+        if (fromHint != null) return fromHint;
         String fromUrl = lastSegment(values.getAsString("uri"));
         return fromUrl == null ? "download.bin" : fromUrl;
     }
 
     private static String resolveDestination(ContentValues values) {
         String hint = values.getAsString("hint");
-        if (hint == null || hint.isEmpty()) {
-            return "内部存储 / Download";
-        }
+        if (hint == null || hint.isEmpty()) return "内部存储 / Download";
         try {
             Uri uri = Uri.parse(hint);
             String path = uri.getPath();
-            if (path == null || path.isEmpty()) {
-                return hint;
-            }
+            if (path == null || path.isEmpty()) return hint;
             int index = path.indexOf("/Download");
             return index >= 0 ? "内部存储" + path.substring(index) : path;
         } catch (Throwable ignored) {
@@ -240,9 +220,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
     }
 
     private static String lastSegment(String source) {
-        if (source == null || source.isEmpty()) {
-            return null;
-        }
+        if (source == null || source.isEmpty()) return null;
         try {
             String segment = Uri.parse(source).getLastPathSegment();
             return segment == null || segment.isEmpty() ? null : segment;
@@ -286,8 +264,8 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
             Context context = contentProvider.getContext();
             if (context != null) {
                 context.getContentResolver().notifyChange(uri, null);
-                Intent wakeup = new Intent("android.intent.action.DOWNLOAD_WAKEUP");
-                wakeup.setPackage(TARGET_PACKAGE);
+                Intent wakeup = new Intent("android.intent.action.DOWNLOAD_WAKEUP")
+                        .setPackage(TARGET_PACKAGE);
                 context.sendBroadcast(wakeup);
             }
         }
