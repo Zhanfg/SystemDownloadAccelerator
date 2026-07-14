@@ -11,6 +11,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import java.lang.reflect.Method;
@@ -31,6 +33,7 @@ public final class HistoryMirrorModule extends XposedModule {
     private static final String ACTION_CONTROL =
             "io.github.zhanfg.sda.action.DOWNLOAD_CONTROL";
     private static final AtomicBoolean CONTROL_RECEIVER_REGISTERED = new AtomicBoolean(false);
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
@@ -52,7 +55,7 @@ public final class HistoryMirrorModule extends XposedModule {
             delete.setAccessible(true);
 
             hook(insert)
-                    .setId("sda.history.insert.v9")
+                    .setId("sda.history.insert.v11")
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -66,7 +69,7 @@ public final class HistoryMirrorModule extends XposedModule {
                     });
 
             hook(update)
-                    .setId("sda.history.update.v9")
+                    .setId("sda.history.update.v11")
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -79,7 +82,7 @@ public final class HistoryMirrorModule extends XposedModule {
                     });
 
             hook(delete)
-                    .setId("sda.history.delete.v9")
+                    .setId("sda.history.delete.v11")
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -94,9 +97,9 @@ public final class HistoryMirrorModule extends XposedModule {
                         return result;
                     });
 
-            log(Log.INFO, TAG, "V9 history and Live Update mirror installed");
+            log(Log.INFO, TAG, "V11 history and Live Update mirror installed");
         } catch (Throwable error) {
-            log(Log.ERROR, TAG, "Failed to install V9 history mirror", error);
+            log(Log.ERROR, TAG, "Failed to install V11 history mirror", error);
         }
     }
 
@@ -111,7 +114,7 @@ public final class HistoryMirrorModule extends XposedModule {
                 String command = intent.getStringExtra("command");
                 if (id < 0 || command == null) return;
                 Uri uri = ContentUris.withAppendedId(
-                        Uri.parse("content://downloads/public_downloads"), id);
+                        Uri.parse("content://downloads/all_downloads"), id);
                 try {
                     if ("cancel".equals(command)) {
                         delete.invoke(provider, uri, null, null);
@@ -120,19 +123,17 @@ public final class HistoryMirrorModule extends XposedModule {
                     ContentValues values = new ContentValues();
                     if ("pause".equals(command)) {
                         values.put("control", 1);
-                    } else if ("resume".equals(command)) {
-                        values.put("control", 0);
-                    } else if ("retry".equals(command)) {
+                    } else if ("resume".equals(command) || "retry".equals(command)) {
                         values.put("control", 0);
                         values.put("status", 190);
                     } else {
                         return;
                     }
                     update.invoke(provider, uri, values, null, null);
-                    context.getContentResolver().notifyChange(uri, null);
-                    Intent wakeup = new Intent("android.intent.action.DOWNLOAD_WAKEUP")
-                            .setPackage(TARGET_PACKAGE);
-                    context.sendBroadcast(wakeup);
+                    kickScheduler(context, uri);
+                    if ("resume".equals(command) || "retry".equals(command)) {
+                        MAIN.postDelayed(() -> verifyAndRepair(provider, update, uri), 450L);
+                    }
                 } catch (Throwable error) {
                     log(Log.ERROR, TAG, "Download control failed: " + command + " id=" + id, error);
                 }
@@ -144,6 +145,38 @@ public final class HistoryMirrorModule extends XposedModule {
         } else {
             context.registerReceiver(receiver, filter);
         }
+    }
+
+    private static void verifyAndRepair(ContentProvider provider, Method update, Uri uri) {
+        Cursor cursor = null;
+        try {
+            cursor = provider.query(uri, null, null, null, null);
+            if (cursor == null || !cursor.moveToFirst()) return;
+            int status = intValue(cursor, "status", 190);
+            int control = intValue(cursor, "control", 0);
+            Context context = provider.getContext();
+            if (status == 193 || control == 1) {
+                ContentValues repair = new ContentValues();
+                repair.put("control", 0);
+                repair.put("status", 190);
+                update.invoke(provider, uri, repair, null, null);
+                if (context != null) kickScheduler(context, uri);
+            } else if (context != null && (status == 190 || status == 194
+                    || status == 195 || status == 196)) {
+                kickScheduler(context, uri);
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to verify notification resume for " + uri, error);
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+    }
+
+    private static void kickScheduler(Context context, Uri uri) {
+        context.getContentResolver().notifyChange(uri, null);
+        Intent wakeup = new Intent("android.intent.action.DOWNLOAD_WAKEUP")
+                .setPackage(TARGET_PACKAGE);
+        context.sendBroadcast(wakeup);
     }
 
     private void mirrorCurrentRow(ContentProvider provider, Uri downloadUri) {
@@ -229,6 +262,11 @@ public final class HistoryMirrorModule extends XposedModule {
     private static long longValue(Cursor cursor, String column, long fallback) {
         int index = cursor.getColumnIndex(column);
         return index < 0 || cursor.isNull(index) ? fallback : cursor.getLong(index);
+    }
+
+    private static int intValue(Cursor cursor, String column, int fallback) {
+        int index = cursor.getColumnIndex(column);
+        return index < 0 || cursor.isNull(index) ? fallback : cursor.getInt(index);
     }
 
     private static String stringValue(Cursor cursor, String column) {
