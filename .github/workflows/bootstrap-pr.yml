@@ -1,4 +1,4 @@
-name: Build Alpha 11 Verified Resume
+name: Build Alpha 12 First Run Audit
 
 on:
   pull_request:
@@ -28,20 +28,20 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Build and verify Alpha 11
+      - name: Build and verify Alpha 12
         id: build
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
-          bash ci/build-alpha11.sh 2>&1 | tee build-alpha11.log
+          bash ci/build-alpha12.sh 2>&1 | tee build-alpha12.log
 
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-alpha11-build-log
-          path: build-alpha11.log
+          name: SystemDownloadAccelerator-alpha12-build-log
+          path: build-alpha12.log
           if-no-files-found: warn
 
       - name: Stop after build failure
@@ -50,6 +50,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-0.2.9-alpha11
+          name: SystemDownloadAccelerator-0.3.0-alpha12
           path: dist/*
           if-no-files-found: error
