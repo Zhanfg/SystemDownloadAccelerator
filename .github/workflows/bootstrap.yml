@@ -1,0 +1,160 @@
+name: Expand Real API 102 Engine
+
+on:
+  push:
+    branches: [ "alpha/**" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  expand-and-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Expand project source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .bootstrap/project.b64 ]]; then
+            base64 --decode .bootstrap/project.b64 > /tmp/project.tar.gz
+          else
+            cat .bootstrap/part* | base64 --decode > /tmp/project.tar.gz
+          fi
+          gzip -t /tmp/project.tar.gz
+          tar -xzf /tmp/project.tar.gz
+
+      - name: Apply dynamic system-bar insets
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="app/src/main/java/io/github/zhanfg/sda"
+          mkdir -p "$SRC"
+          cat > "$SRC/SystemBarInsets.java" <<'JAVA'
+          package io.github.zhanfg.sda;
+
+          import android.graphics.Insets;
+          import android.os.Build;
+          import android.view.View;
+          import android.view.WindowInsets;
+
+          /** Applies status-bar, display-cutout and navigation-bar insets without fixed pixel values. */
+          final class SystemBarInsets {
+              private SystemBarInsets() {}
+
+              static void apply(View root) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT_WATCH) {
+                      root.setFitsSystemWindows(true);
+                      return;
+                  }
+
+                  final int baseLeft = root.getPaddingLeft();
+                  final int baseTop = root.getPaddingTop();
+                  final int baseRight = root.getPaddingRight();
+                  final int baseBottom = root.getPaddingBottom();
+
+                  root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+                      int left;
+                      int top;
+                      int right;
+                      int bottom;
+
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                          Insets bars = windowInsets.getInsets(
+                                  WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                          left = bars.left;
+                          top = bars.top;
+                          right = bars.right;
+                          bottom = bars.bottom;
+                      } else {
+                          left = windowInsets.getSystemWindowInsetLeft();
+                          top = windowInsets.getSystemWindowInsetTop();
+                          right = windowInsets.getSystemWindowInsetRight();
+                          bottom = windowInsets.getSystemWindowInsetBottom();
+                      }
+
+                      view.setPadding(
+                              baseLeft + left,
+                              baseTop + top,
+                              baseRight + right,
+                              baseBottom + bottom);
+                      return windowInsets;
+                  });
+                  root.requestApplyInsets();
+              }
+          }
+          JAVA
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('app/src/main/java/io/github/zhanfg/sda')
+
+          main = root / 'MainActivity.java'
+          text = main.read_text(encoding='utf-8')
+          replacement = '''android.view.View rootView = buildRoot();
+                  SystemBarInsets.apply(rootView);
+                  setContentView(rootView);'''
+          text, count = re.subn(
+              r'(?:this\.)?setContentView\((?:this\.)?buildRoot\(\)\);',
+              replacement,
+              text,
+              count=1,
+          )
+          if count != 1 and 'SystemBarInsets.apply(rootView)' not in text:
+              raise SystemExit('MainActivity setContentView pattern not found')
+          main.write_text(text, encoding='utf-8')
+
+          confirm = root / 'DownloadConfirmActivity.java'
+          text = confirm.read_text(encoding='utf-8')
+          if 'SystemBarInsets.apply(rootView)' not in text:
+              pattern = r'(?:this\.)?setContentView\((?:this\.)?build\(([^;]+?)\)\);'
+              match = re.search(pattern, text)
+              if not match:
+                  raise SystemExit('DownloadConfirmActivity setContentView pattern not found')
+              arg = match.group(1)
+              replacement = f'''android.view.View rootView = build({arg});
+                  SystemBarInsets.apply(rootView);
+                  setContentView(rootView);'''
+              text = re.sub(pattern, replacement, text, count=1)
+          confirm.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Activate real libxposed entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          META="app/src/main/resources/META-INF/xposed"
+          mkdir -p "$META"
+          printf '%s\n' 'io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule' > "$META/java_init.list"
+          printf '%s\n' 'com.android.providers.downloads' > "$META/scope.list"
+          cat > "$META/module.prop" <<'EOF'
+          minApiVersion=102
+          targetApiVersion=102
+          staticScope=false
+          autoHotReload=false
+          exceptionMode=protective
+          EOF
+
+          cat >> app/proguard-rules.pro <<'EOF'
+
+          # The modern Xposed entry is loaded by its literal name from META-INF/xposed/java_init.list.
+          -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule { public *; }
+          -keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule$* { *; }
+          EOF
+
+      - name: Commit expanded real module source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .bootstrap .github/workflows/bootstrap.yml .ci-retry* .ci-insets-fix
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Implement real libxposed API 102 range engine"
+          git push
