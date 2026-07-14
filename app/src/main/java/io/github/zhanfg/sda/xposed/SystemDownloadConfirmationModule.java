@@ -7,6 +7,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -34,6 +35,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
     private static final Uri ROOT_BRIDGE_URI =
             Uri.parse("content://io.github.zhanfg.sda.rootbridge");
     private static final long FAILSAFE_RESUME_MS = 120_000L;
+    private static final long RESUME_VERIFY_MS = 450L;
 
     private static final AtomicBoolean RECEIVER_REGISTERED = new AtomicBoolean(false);
     private static final Map<String, PendingDownload> PENDING = new ConcurrentHashMap<>();
@@ -61,7 +63,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
             delete.setAccessible(true);
 
             hook(insert)
-                    .setId("sda.system-download-confirmation.v9")
+                    .setId("sda.system-download-confirmation.v11")
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -99,14 +101,14 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
 
                         scheduleTimeout(pending);
                         log(Log.INFO, TAG,
-                                "Download paused for V9 animated confirmation: " + downloadUri);
+                                "Download paused for V11 confirmation: " + downloadUri);
                         return result;
                     });
 
             log(Log.INFO, TAG,
-                    "V9 confirmation gate installed; animated Live Update handoff enabled");
+                    "V11 confirmation gate installed; verified resume path enabled");
         } catch (Throwable error) {
-            log(Log.ERROR, TAG, "Failed to install V9 confirmation hook", error);
+            log(Log.ERROR, TAG, "Failed to install V11 confirmation hook", error);
         }
     }
 
@@ -168,7 +170,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
         try {
             if (decision == 1) {
                 pending.resume();
-                log(Log.INFO, TAG, "Confirmed system download: " + pending.uri);
+                log(Log.INFO, TAG, "Confirmed and resumed system download: " + pending.uri);
             } else {
                 pending.cancel();
                 log(Log.INFO, TAG, "Cancelled system download: " + pending.uri);
@@ -257,21 +259,64 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
         }
 
         void resume() throws Exception {
+            writeRunnableState();
+            kickScheduler();
+            MAIN.postDelayed(this::verifyResumeState, RESUME_VERIFY_MS);
+        }
+
+        private void writeRunnableState() throws Exception {
             ContentValues values = new ContentValues();
             values.put("control", 0);
-            update.invoke(provider, uri, values, null, null);
+            values.put("status", 190);
+            try {
+                update.invoke(provider, uri, values, null, null);
+            } catch (Throwable firstError) {
+                ContentValues fallback = new ContentValues();
+                fallback.put("control", 0);
+                update.invoke(provider, uri, fallback, null, null);
+            }
+        }
+
+        private void verifyResumeState() {
+            ContentProvider contentProvider = (ContentProvider) provider;
+            Cursor cursor = null;
+            try {
+                cursor = contentProvider.query(uri, null, null, null, null);
+                if (cursor == null || !cursor.moveToFirst()) return;
+                int status = intValue(cursor, "status", 190);
+                int control = intValue(cursor, "control", 0);
+                if (status == 193 || control == 1) {
+                    writeRunnableState();
+                    kickScheduler();
+                    log(Log.WARN, TAG,
+                            "Paused row repaired after confirmation: " + uri);
+                } else if (status == 190 || status == 194 || status == 195 || status == 196) {
+                    kickScheduler();
+                }
+            } catch (Throwable error) {
+                log(Log.WARN, TAG, "Unable to verify resume state for " + uri, error);
+            } finally {
+                if (cursor != null) cursor.close();
+            }
+        }
+
+        private void kickScheduler() {
             ContentProvider contentProvider = (ContentProvider) provider;
             Context context = contentProvider.getContext();
-            if (context != null) {
-                context.getContentResolver().notifyChange(uri, null);
-                Intent wakeup = new Intent("android.intent.action.DOWNLOAD_WAKEUP")
-                        .setPackage(TARGET_PACKAGE);
-                context.sendBroadcast(wakeup);
-            }
+            if (context == null) return;
+            context.getContentResolver().notifyChange(uri, null);
+            Intent wakeup = new Intent("android.intent.action.DOWNLOAD_WAKEUP")
+                    .setPackage(TARGET_PACKAGE);
+            context.sendBroadcast(wakeup);
         }
 
         void cancel() throws Exception {
             delete.invoke(provider, uri, null, null);
+        }
+
+        private static int intValue(Cursor cursor, String column, int fallback) {
+            int index = cursor.getColumnIndex(column);
+            return index < 0 || cursor.isNull(index) ? fallback : cursor.getInt(index);
         }
     }
 }
