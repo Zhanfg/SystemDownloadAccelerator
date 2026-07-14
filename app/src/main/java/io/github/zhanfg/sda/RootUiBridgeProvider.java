@@ -49,7 +49,7 @@ public final class RootUiBridgeProvider extends ContentProvider {
         if (token == null || !token.matches("[a-fA-F0-9]{16,160}")) {
             throw new IllegalArgumentException("Invalid confirmation token");
         }
-        Context context = requireContext();
+        Context context = providerContext();
         DownloadUiState.store(context, token, extras == null ? Bundle.EMPTY : extras);
         EXECUTOR.execute(() -> launchConfirmation(context, token));
         Bundle result = new Bundle();
@@ -62,7 +62,7 @@ public final class RootUiBridgeProvider extends ContentProvider {
         try {
             String command = "am start --user current --activity-no-animation "
                     + "-n " + ACTIVITY_COMPONENT + " --es token " + token;
-            Process process = new ProcessBuilder("su", "-c", command)
+            java.lang.Process process = new ProcessBuilder("su", "-c", command)
                     .redirectErrorStream(true)
                     .start();
             boolean finished = process.waitFor(12, TimeUnit.SECONDS);
@@ -78,7 +78,6 @@ public final class RootUiBridgeProvider extends ContentProvider {
             return;
         }
 
-        // Compatibility fallback for devices where background Activity launch is still permitted.
         try {
             Intent intent = new Intent(context, SystemDownloadConfirmActivity.class);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
@@ -97,7 +96,7 @@ public final class RootUiBridgeProvider extends ContentProvider {
         if (uid == Process.SYSTEM_UID || uid == Process.myUid()) {
             return;
         }
-        Context context = requireContext();
+        Context context = providerContext();
         PackageManager packageManager = context.getPackageManager();
         String[] packages = packageManager.getPackagesForUid(uid);
         if (packages != null) {
@@ -110,7 +109,7 @@ public final class RootUiBridgeProvider extends ContentProvider {
         throw new SecurityException("Root UI bridge denied for uid " + uid);
     }
 
-    private Context requireContext() {
+    private Context providerContext() {
         Context context = getContext();
         if (context == null) {
             throw new IllegalStateException("Provider context unavailable");
