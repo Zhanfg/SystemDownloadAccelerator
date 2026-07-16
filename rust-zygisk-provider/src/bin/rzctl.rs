@@ -82,7 +82,7 @@ fn safe_mode(action: &str) -> Result<(), String> {
             fs::set_permissions(SAFE_MODE_FILE, fs::Permissions::from_mode(0o600))
                 .map_err(|error| error.to_string())?;
             let _ = signal_daemon(libc::SIGTERM);
-            println!("{\"safe_mode\":true,\"action\":\"enabled\"}");
+            println!("{{\"safe_mode\":true,\"action\":\"enabled\"}}");
             Ok(())
         }
         "disable" => {
@@ -90,7 +90,7 @@ fn safe_mode(action: &str) -> Result<(), String> {
             if Path::new(SAFE_MODE_FILE).exists() {
                 fs::remove_file(SAFE_MODE_FILE).map_err(|error| error.to_string())?;
             }
-            println!("{\"safe_mode\":false,\"action\":\"disabled\"}");
+            println!("{{\"safe_mode\":false,\"action\":\"disabled\"}}");
             Ok(())
         }
         other => Err(format!(
@@ -102,7 +102,7 @@ fn safe_mode(action: &str) -> Result<(), String> {
 fn restart_daemon() -> Result<(), String> {
     require_root()?;
     signal_daemon(libc::SIGTERM)?;
-    println!("{\"restart_requested\":true}");
+    println!("{{\"restart_requested\":true}}");
     Ok(())
 }
 
