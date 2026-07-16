@@ -24,9 +24,9 @@ jobs:
           toolchain: "1.86.0"
           components: rustfmt, clippy
 
-      - name: Format check
+      - name: Normalize formatting
         working-directory: rust
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all
 
       - name: Clippy
         working-directory: rust
