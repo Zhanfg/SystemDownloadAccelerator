@@ -19,11 +19,20 @@ mkdir -p "$OUT_DIR"
   echo "[host]"
   "$CTL" host 2>&1 || true
   echo
+  echo "[monitor]"
+  "$CTL" monitor 2>&1 || true
+  echo
+  echo "[provider-gate]"
+  "$CTL" provider-gate 2>&1 || true
+  echo
   echo "[doctor]"
   "$CTL" doctor 2>&1 || true
   echo
   echo "[safe-mode]"
   "$CTL" safe-mode status 2>&1 || true
+  echo
+  echo "[monitor-state]"
+  cat /data/adb/rzruntime/state/monitor.json 2>/dev/null || echo "missing"
   echo
   echo "[supervisor-state]"
   cat /data/adb/rzruntime/state/supervisor.json 2>/dev/null || echo "missing"
@@ -32,7 +41,7 @@ mkdir -p "$OUT_DIR"
   cat /data/adb/rzruntime/state/last_guest.txt 2>/dev/null || echo "missing"
   echo
   echo "[recent-log]"
-  tail -n 120 /data/adb/rzruntime/log/rzruntime.log 2>/dev/null || echo "missing"
+  tail -n 160 /data/adb/rzruntime/log/rzruntime.log 2>/dev/null || echo "missing"
 } | tee "$OUT_FILE"
 
 chmod 0644 "$OUT_FILE" 2>/dev/null
