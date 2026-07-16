@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 2;
-const MAGIC: [u8; 4] = *b"RZG2";
+pub const PROTOCOL_VERSION: u16 = 3;
+const MAGIC: [u8; 4] = *b"RZG3";
 const HEADER_LEN: usize = 20;
 const MAX_BODY_LEN: usize = 64 * 1024;
 
@@ -16,6 +16,10 @@ pub enum MessageKind {
     HostStatus = 6,
     QueryDoctor = 7,
     DoctorStatus = 8,
+    QueryMonitor = 9,
+    MonitorStatus = 10,
+    QueryProviderGate = 11,
+    ProviderGateStatus = 12,
     Error = 255,
 }
 
@@ -32,6 +36,10 @@ impl TryFrom<u16> for MessageKind {
             6 => Ok(Self::HostStatus),
             7 => Ok(Self::QueryDoctor),
             8 => Ok(Self::DoctorStatus),
+            9 => Ok(Self::QueryMonitor),
+            10 => Ok(Self::MonitorStatus),
+            11 => Ok(Self::QueryProviderGate),
+            12 => Ok(Self::ProviderGateStatus),
             255 => Ok(Self::Error),
             other => Err(ProtocolError::UnknownKind(other)),
         }
@@ -164,12 +172,12 @@ mod tests {
     }
 
     #[test]
-    fn host_query_round_trip() {
-        let message = Message::new(MessageKind::QueryHost, 42, 0, "");
+    fn monitor_query_round_trip() {
+        let message = Message::new(MessageKind::QueryMonitor, 42, 0, "");
         let mut encoded = Vec::new();
         message.write_to(&mut encoded).unwrap();
         let decoded = Message::read_from(&mut encoded.as_slice()).unwrap();
-        assert_eq!(decoded.kind, MessageKind::QueryHost);
+        assert_eq!(decoded.kind, MessageKind::QueryMonitor);
     }
 
     #[test]
