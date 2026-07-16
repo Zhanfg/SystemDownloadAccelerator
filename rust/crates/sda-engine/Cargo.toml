@@ -1,0 +1,11 @@
+[package]
+name = "sda-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sda-core = { path = "../sda-core" }
+thiserror.workspace = true
