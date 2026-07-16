@@ -50,6 +50,13 @@ jobs:
         working-directory: rust-zygisk-provider
         run: cargo test --all-targets
 
+      - name: Validate module shell scripts
+        run: |
+          bash -n rust-zygisk-provider/module/service.sh
+          bash -n rust-zygisk-provider/module/post-fs-data.sh
+          bash -n rust-zygisk-provider/module/action.sh
+          bash -n rust-zygisk-provider/module/uninstall.sh
+
       - uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
@@ -74,6 +81,7 @@ jobs:
           unzip -Z1 "$ZIP" | grep -qx 'bin/rzguestd'
           unzip -Z1 "$ZIP" | grep -qx 'bin/rzsupervisord'
           unzip -Z1 "$ZIP" | grep -qx 'bin/rzctl'
+          unzip -Z1 "$ZIP" | grep -qx 'action.sh'
           (cd rust-zygisk-provider/dist && sha256sum -c SHA256SUMS.txt)
 
       - uses: actions/upload-artifact@v4
