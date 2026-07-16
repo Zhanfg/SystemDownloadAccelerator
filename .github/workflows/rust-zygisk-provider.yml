@@ -27,15 +27,6 @@ jobs:
           targets: aarch64-linux-android
           components: rustfmt, clippy
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "ndk;27.2.12479018"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-
       - name: Normalize Rust formatting
         working-directory: rust-zygisk-provider
         run: cargo fmt --all
@@ -58,6 +49,15 @@ jobs:
       - name: Rust unit tests
         working-directory: rust-zygisk-provider
         run: cargo test --all-targets
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Build Android module
         run: |
