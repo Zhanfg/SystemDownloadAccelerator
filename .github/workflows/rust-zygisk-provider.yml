@@ -1,0 +1,91 @@
+name: Build Rust Zygisk Guest Runtime
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "rust-zygisk-provider/**"
+      - ".github/workflows/rust-zygisk-provider.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.86.0"
+          targets: aarch64-linux-android
+          components: rustfmt, clippy
+
+      - name: Normalize Rust formatting
+        working-directory: rust-zygisk-provider
+        run: cargo fmt --all
+
+      - name: Rust clippy
+        working-directory: rust-zygisk-provider
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets -- -D warnings 2>&1 | tee clippy.log
+
+      - name: Upload Rust validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rust-Zygisk-Runtime-validation
+          path: rust-zygisk-provider/clippy.log
+          if-no-files-found: ignore
+
+      - name: Rust unit tests
+        working-directory: rust-zygisk-provider
+        run: cargo test --all-targets
+
+      - name: Validate module shell scripts
+        run: |
+          bash -n rust-zygisk-provider/module/service.sh
+          bash -n rust-zygisk-provider/module/post-fs-data.sh
+          bash -n rust-zygisk-provider/module/action.sh
+          bash -n rust-zygisk-provider/module/uninstall.sh
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Build Android module
+        run: |
+          chmod +x rust-zygisk-provider/build.sh
+          rust-zygisk-provider/build.sh
+
+      - name: Inspect module archive
+        run: |
+          ZIP=rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.3.0.zip
+          unzip -l "$ZIP"
+          test -s "$ZIP"
+          test -s rust-zygisk-provider/dist/SHA256SUMS.txt
+          unzip -Z1 "$ZIP" | grep -qx 'zygisk/arm64-v8a.so'
+          unzip -Z1 "$ZIP" | grep -qx 'bin/rzguestd'
+          unzip -Z1 "$ZIP" | grep -qx 'bin/rzsupervisord'
+          unzip -Z1 "$ZIP" | grep -qx 'bin/rzctl'
+          unzip -Z1 "$ZIP" | grep -qx 'action.sh'
+          (cd rust-zygisk-provider/dist && sha256sum -c SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rust-Zygisk-Runtime-Guest-v0.3.0
+          path: rust-zygisk-provider/dist/*
+          if-no-files-found: error
