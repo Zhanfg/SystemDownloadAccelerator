@@ -1,4 +1,5 @@
 pub mod host;
+pub mod monitor;
 pub mod protocol;
 pub mod security;
 
