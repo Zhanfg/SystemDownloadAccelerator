@@ -68,7 +68,10 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let snapshot = Arc::new(Mutex::new(RuntimeSnapshot::new()?));
-    persist_snapshot(&snapshot.lock().map_err(|_| "state poisoned")?)?;
+    {
+        let current = snapshot.lock().map_err(|_| "state poisoned")?;
+        persist_snapshot(&current)?;
+    }
 
     println!("rzguestd: listening on {SOCKET_PATH}");
     for connection in listener.incoming() {
