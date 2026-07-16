@@ -18,7 +18,7 @@ pub enum MessageKind {
 impl TryFrom<u16> for MessageKind {
     type Error = ProtocolError;
 
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
+    fn try_from(value: u16) -> Result<Self, ProtocolError> {
         match value {
             1 => Ok(Self::RegisterProcess),
             2 => Ok(Self::Ack),
