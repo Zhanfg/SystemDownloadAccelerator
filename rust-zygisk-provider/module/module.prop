@@ -1,0 +1,8 @@
+id=rust_zygisk_runtime
+name=Rust Zygisk Runtime (Guest Preview)
+version=0.1.0-guest
+versionCode=100
+maintainer=Zhanfg
+updateJson=
+author=Zhanfg
+description=Rust-first Zygisk guest runtime. Uses a minimal C++ ABI shim and keeps lifecycle, companion IPC, daemon state and diagnostics in Rust.
