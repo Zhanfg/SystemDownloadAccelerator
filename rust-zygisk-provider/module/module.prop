@@ -1,8 +1,8 @@
 id=rust_zygisk_runtime
 name=Rust Zygisk Runtime (Guest Preview)
-version=0.2.0-guest
-versionCode=200
+version=0.3.0-guest
+versionCode=300
 maintainer=Zhanfg
 updateJson=
 author=Zhanfg
-description=Rust-first Zygisk guest runtime with a minimal C++ ABI shim, authenticated IPC, host detection, crash supervision, safe mode and diagnostics.
+description=Rust-first Zygisk guest runtime with authenticated IPC, crash supervision, safe mode, read-only Zygote/USAP monitoring, pidfd liveness checks and provider conflict arbitration.
