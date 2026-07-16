@@ -1,0 +1,37 @@
+name: Validate Rust Rewrite
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "rust/**"
+      - ".github/workflows/rust-rewrite.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.86.0"
+          components: rustfmt, clippy
+
+      - name: Format check
+        working-directory: rust
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Unit tests
+        working-directory: rust
+        run: cargo test --workspace
