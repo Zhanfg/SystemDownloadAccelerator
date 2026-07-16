@@ -1,0 +1,66 @@
+name: Build Rust Zygisk Guest Runtime
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "rust-zygisk-provider/**"
+      - ".github/workflows/rust-zygisk-provider.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.86.0"
+          targets: aarch64-linux-android
+          components: rustfmt, clippy
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Rust format check
+        working-directory: rust-zygisk-provider
+        run: cargo fmt --all -- --check
+
+      - name: Rust clippy
+        working-directory: rust-zygisk-provider
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust unit tests
+        working-directory: rust-zygisk-provider
+        run: cargo test --all-targets
+
+      - name: Build Android module
+        run: |
+          chmod +x rust-zygisk-provider/build.sh
+          rust-zygisk-provider/build.sh
+
+      - name: Inspect module archive
+        run: |
+          unzip -l rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.1.0.zip
+          test -s rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.1.0.zip
+          test -s rust-zygisk-provider/dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rust-Zygisk-Runtime-Guest-v0.1.0
+          path: rust-zygisk-provider/dist/*
+          if-no-files-found: error
