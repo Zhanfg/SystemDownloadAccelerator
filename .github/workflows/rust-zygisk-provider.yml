@@ -66,12 +66,18 @@ jobs:
 
       - name: Inspect module archive
         run: |
-          unzip -l rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.1.0.zip
-          test -s rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.1.0.zip
+          ZIP=rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.2.0.zip
+          unzip -l "$ZIP"
+          test -s "$ZIP"
           test -s rust-zygisk-provider/dist/SHA256SUMS.txt
+          unzip -Z1 "$ZIP" | grep -qx 'zygisk/arm64-v8a.so'
+          unzip -Z1 "$ZIP" | grep -qx 'bin/rzguestd'
+          unzip -Z1 "$ZIP" | grep -qx 'bin/rzsupervisord'
+          unzip -Z1 "$ZIP" | grep -qx 'bin/rzctl'
+          (cd rust-zygisk-provider/dist && sha256sum -c SHA256SUMS.txt)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Rust-Zygisk-Runtime-Guest-v0.1.0
+          name: Rust-Zygisk-Runtime-Guest-v0.2.0
           path: rust-zygisk-provider/dist/*
           if-no-files-found: error
