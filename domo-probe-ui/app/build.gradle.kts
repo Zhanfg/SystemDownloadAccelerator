@@ -10,8 +10,8 @@ android {
         applicationId = "io.github.zhanfg.sda.domo"
         minSdk = 27
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3-probe"
+        versionCode = 5
+        versionName = "0.1.4-probe"
     }
 
     buildTypes {
