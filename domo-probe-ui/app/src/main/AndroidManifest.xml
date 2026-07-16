@@ -39,10 +39,5 @@
             android:enabled="true"
             android:exported="true"
             android:grantUriPermissions="false" />
-
-        <receiver
-            android:name=".ProbeResultReceiver"
-            android:enabled="false"
-            android:exported="false" />
     </application>
 </manifest>
