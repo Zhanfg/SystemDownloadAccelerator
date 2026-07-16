@@ -24,6 +24,11 @@ fn run() -> Result<(), String> {
     match command {
         "status" | "ping" => query(MessageKind::QueryStatus, MessageKind::Status),
         "host" => query(MessageKind::QueryHost, MessageKind::HostStatus),
+        "monitor" => query(MessageKind::QueryMonitor, MessageKind::MonitorStatus),
+        "provider-gate" => query(
+            MessageKind::QueryProviderGate,
+            MessageKind::ProviderGateStatus,
+        ),
         "doctor" => query(MessageKind::QueryDoctor, MessageKind::DoctorStatus),
         "safe-mode" => safe_mode(arguments.get(1).map(String::as_str).unwrap_or("status")),
         "restart-daemon" => restart_daemon(),
@@ -40,10 +45,10 @@ fn query(request_kind: MessageKind, expected_kind: MessageKind) -> Result<(), St
         format!("cannot connect to runtime daemon at {SOCKET_PATH}: {error}")
     })?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|error| error.to_string())?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_write_timeout(Some(Duration::from_secs(3)))
         .map_err(|error| error.to_string())?;
 
     Message::new(request_kind, std::process::id(), effective_uid(), "")
@@ -146,6 +151,6 @@ fn now_ms() -> Result<u128, String> {
 
 fn print_help() {
     println!(
-        "Usage: rzctl <command>\n\nCommands:\n  status\n  host\n  doctor\n  safe-mode [status|enable|disable]\n  restart-daemon\n  help"
+        "Usage: rzctl <command>\n\nCommands:\n  status\n  host\n  monitor\n  provider-gate\n  doctor\n  safe-mode [status|enable|disable]\n  restart-daemon\n  help"
     );
 }
