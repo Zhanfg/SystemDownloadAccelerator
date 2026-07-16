@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SDA Domo Probe</string>
+    <string name="xposed_description">仅用于验证 ColorOS Domo 流体云匹配链，不接管下载。</string>
+</resources>
