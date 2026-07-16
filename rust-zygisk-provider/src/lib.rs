@@ -1,4 +1,6 @@
+pub mod host;
 pub mod protocol;
+pub mod security;
 
 use std::ffi::{c_char, CStr};
 use std::fs::{self, OpenOptions};
@@ -14,6 +16,7 @@ use protocol::{Message, MessageKind};
 const CONTROL_SOCKET: &str = "/data/adb/rzruntime/run/control.sock";
 const FALLBACK_STATE_DIR: &str = "/data/adb/rzruntime/state";
 const FALLBACK_STATE_FILE: &str = "/data/adb/rzruntime/state/last_guest.txt";
+const SAFE_MODE_FILE: &str = "/data/adb/rzruntime/state/safe_mode";
 const TARGET_PROCESS: &str = "com.android.providers.downloads";
 
 pub const DECISION_UNLOAD: i32 = 0;
@@ -27,10 +30,15 @@ pub extern "C" fn rz_runtime_on_load() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rz_runtime_pre_app(process_name: *const c_char, _uid: i32) -> i32 {
-    ffi_guard(|| match read_process_name(process_name) {
-        Ok(name) if name == TARGET_PROCESS => DECISION_KEEP_WITH_COMPANION,
-        Ok(_) => DECISION_UNLOAD,
-        Err(_) => DECISION_UNLOAD,
+    ffi_guard(|| {
+        if Path::new(SAFE_MODE_FILE).exists() {
+            return DECISION_UNLOAD;
+        }
+        match read_process_name(process_name) {
+            Ok(name) if name == TARGET_PROCESS => DECISION_KEEP_WITH_COMPANION,
+            Ok(_) => DECISION_UNLOAD,
+            Err(_) => DECISION_UNLOAD,
+        }
     })
     .unwrap_or(DECISION_UNLOAD)
 }
@@ -178,7 +186,10 @@ mod tests {
     use std::ffi::CString;
 
     #[test]
-    fn target_process_requests_companion() {
+    fn target_process_requests_companion_when_not_in_safe_mode() {
+        if Path::new(SAFE_MODE_FILE).exists() {
+            return;
+        }
         let name = CString::new(TARGET_PROCESS).unwrap();
         assert_eq!(
             rz_runtime_pre_app(name.as_ptr(), 10068),
