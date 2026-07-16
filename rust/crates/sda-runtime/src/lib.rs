@@ -10,7 +10,7 @@ static RUNTIME: OnceLock<RuntimeContext> = OnceLock::new();
 #[derive(Debug)]
 struct RuntimeContext {
     process_name: String,
-    daemon_fd: RawFd,
+    bootstrap_fd: RawFd,
 }
 
 #[repr(C)]
@@ -39,6 +39,11 @@ pub extern "C" fn sda_runtime_is_initialized() -> bool {
     RUNTIME.get().is_some()
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn sda_companion_handle(client_fd: RawFd) {
+    let _ = ffi_guard(|| companion_handle(client_fd));
+}
+
 fn initialize(args: *const SdaRuntimeInitArgs) -> SdaRuntimeStatus {
     if args.is_null() {
         return SdaRuntimeStatus::InvalidArgument;
@@ -62,7 +67,7 @@ fn initialize(args: *const SdaRuntimeInitArgs) -> SdaRuntimeStatus {
 
     let context = RuntimeContext {
         process_name: process_name.to_owned(),
-        daemon_fd: args.daemon_fd,
+        bootstrap_fd: args.daemon_fd,
     };
 
     if RUNTIME.set(context).is_err() {
@@ -70,6 +75,13 @@ fn initialize(args: *const SdaRuntimeInitArgs) -> SdaRuntimeStatus {
     }
 
     SdaRuntimeStatus::Ok
+}
+
+fn companion_handle(client_fd: RawFd) {
+    // Phase 2 will connect to /data/adb/sda/run/control.sock and transfer the
+    // authenticated daemon descriptor with SCM_RIGHTS. The FFI boundary is
+    // established now so the C++ shim never owns daemon or protocol logic.
+    let _ = client_fd;
 }
 
 fn ffi_guard<T>(operation: impl FnOnce() -> T) -> Result<T, RuntimeError> {
