@@ -1,0 +1,17 @@
+[package]
+name = "sda-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+sda-core = { path = "../sda-core" }
+sda-engine = { path = "../sda-engine" }
+sda-protocol = { path = "../sda-protocol" }
+thiserror.workspace = true
+tracing.workspace = true
