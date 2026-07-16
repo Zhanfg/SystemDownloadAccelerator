@@ -1,0 +1,16 @@
+[package]
+name = "sdad"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+sda-core = { path = "../sda-core" }
+sda-protocol = { path = "../sda-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
