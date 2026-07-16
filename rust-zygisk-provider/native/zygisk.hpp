@@ -19,7 +19,6 @@ struct ServerSpecializeArgs;
 
 class ModuleBase {
 public:
-    virtual ~ModuleBase() = default;
     virtual void onLoad([[maybe_unused]] Api *api, [[maybe_unused]] JNIEnv *env) {}
     virtual void preAppSpecialize([[maybe_unused]] AppSpecializeArgs *args) {}
     virtual void postAppSpecialize([[maybe_unused]] const AppSpecializeArgs *args) {}
