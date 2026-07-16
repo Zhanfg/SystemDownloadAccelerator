@@ -81,7 +81,7 @@ fn run() -> Result<(), String> {
             }
         }
 
-        if recent_exits.len() >= CRASH_LIMIT {
+        if should_fuse(recent_exits.len()) {
             enable_crash_safe_mode(status, restarts)?;
             persist_state(
                 "crash-fused",
@@ -105,6 +105,10 @@ fn run() -> Result<(), String> {
         thread::sleep(backoff);
         backoff = (backoff * 2).min(Duration::from_secs(30));
     }
+}
+
+fn should_fuse(recent_exit_count: usize) -> bool {
+    recent_exit_count >= CRASH_LIMIT
 }
 
 fn prepare_directories() -> Result<(), String> {
@@ -188,8 +192,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn crash_policy_constants_are_sane() {
-        assert!(CRASH_LIMIT >= 3);
-        assert!(CRASH_WINDOW > STABLE_RUNTIME);
+    fn crash_fuse_trips_at_limit() {
+        assert!(!should_fuse(CRASH_LIMIT.saturating_sub(1)));
+        assert!(should_fuse(CRASH_LIMIT));
+        assert!(should_fuse(CRASH_LIMIT + 1));
     }
 }
