@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Domo 下载通知探针</string>
+    <string name="xposed_description">验证系统下载通知 Hook 是否准确命中；不修改通知，不接管下载。</string>
+</resources>
