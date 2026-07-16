@@ -1,0 +1,12 @@
+[package]
+name = "sda-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sda-protocol = { path = "../sda-protocol" }
+serde.workspace = true
+thiserror.workspace = true

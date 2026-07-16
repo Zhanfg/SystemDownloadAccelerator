@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sda-protocol",
+    "crates/sda-core",
+    "crates/sda-engine",
+    "crates/sda-runtime",
+    "crates/sdad",
+    "crates/sdactl",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+license = "GPL-3.0-only"
+repository = "https://github.com/Zhanfg/SystemDownloadAccelerator"
+
+[workspace.dependencies]
+anyhow = "1.0"
+bytes = "1.10"
+prost = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
