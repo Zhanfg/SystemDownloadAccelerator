@@ -1,0 +1,29 @@
+[package]
+name = "rz-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+license = "Apache-2.0"
+description = "Rust-first guest runtime hosted by a compatible Zygisk provider"
+
+[lib]
+name = "rz_runtime"
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "rzguestd"
+path = "src/bin/rzguestd.rs"
+
+[[bin]]
+name = "rzctl"
+path = "src/bin/rzctl.rs"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
