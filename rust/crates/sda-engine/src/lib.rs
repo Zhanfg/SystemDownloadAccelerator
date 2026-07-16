@@ -33,8 +33,10 @@ pub trait RangeBackend: Send + Sync + 'static {
 
     fn probe(&self, url: &str, headers: &[(String, String)]) -> Result<ProbeResult, EngineError>;
 
-    fn open_range(&self, request: &RangeRequest)
-        -> Result<(RangeResponseMeta, Self::Reader), EngineError>;
+    fn open_range(
+        &self,
+        request: &RangeRequest,
+    ) -> Result<(RangeResponseMeta, Self::Reader), EngineError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,8 +89,8 @@ pub fn plan_segments(total_length: u64, config: PlannerConfig) -> Result<Vec<Seg
     let mut start = 0u64;
 
     for index in 0..worker_count {
-        let extra = u64::from(index) < remainder;
-        let len = base + u64::from(extra);
+        let extra = if u64::from(index) < remainder { 1 } else { 0 };
+        let len = base + extra;
         let end_inclusive = start + len - 1;
         segments.push(Segment {
             index,
