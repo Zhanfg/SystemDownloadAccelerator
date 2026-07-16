@@ -73,7 +73,7 @@ jobs:
 
       - name: Inspect module archive
         run: |
-          ZIP=rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.2.0.zip
+          ZIP=rust-zygisk-provider/dist/Rust-Zygisk-Runtime-Guest-v0.3.0.zip
           unzip -l "$ZIP"
           test -s "$ZIP"
           test -s rust-zygisk-provider/dist/SHA256SUMS.txt
@@ -86,6 +86,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Rust-Zygisk-Runtime-Guest-v0.2.0
+          name: Rust-Zygisk-Runtime-Guest-v0.3.0
           path: rust-zygisk-provider/dist/*
           if-no-files-found: error
