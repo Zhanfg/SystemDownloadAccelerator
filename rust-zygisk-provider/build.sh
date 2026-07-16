@@ -21,8 +21,9 @@ TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG"
 CC="$TOOLCHAIN/bin/${TARGET}${ANDROID_API}-clang"
 CXX="$TOOLCHAIN/bin/${TARGET}${ANDROID_API}-clang++"
 AR="$TOOLCHAIN/bin/llvm-ar"
+STRIP="$TOOLCHAIN/bin/llvm-strip"
 
-for tool in "$CC" "$CXX" "$AR" cargo rustc zip; do
+for tool in "$CC" "$CXX" "$AR" "$STRIP" cargo rustc zip; do
   if ! command -v "$tool" >/dev/null 2>&1 && [[ ! -x "$tool" ]]; then
     echo "Required build tool not found: $tool" >&2
     exit 1
@@ -76,6 +77,7 @@ cp -a "$ROOT/module/." "$STAGE/"
   -pthread -ldl -llog -lm \
   -o "$STAGE/zygisk/arm64-v8a.so"
 
+"$STRIP" --strip-unneeded "$STAGE/zygisk/arm64-v8a.so"
 cp "$DAEMON" "$STAGE/bin/rzguestd"
 cp "$CTL" "$STAGE/bin/rzctl"
 chmod 0755 \
@@ -86,11 +88,15 @@ chmod 0755 \
   "$STAGE/bin/rzctl"
 chmod 0644 "$STAGE/zygisk/arm64-v8a.so" "$STAGE/module.prop"
 
-MODULE_ZIP="$DIST/Rust-Zygisk-Runtime-Guest-v0.1.0.zip"
+MODULE_NAME="Rust-Zygisk-Runtime-Guest-v0.1.0.zip"
+MODULE_ZIP="$DIST/$MODULE_NAME"
 (
   cd "$STAGE"
   zip -qr "$MODULE_ZIP" .
 )
-sha256sum "$MODULE_ZIP" | tee "$DIST/SHA256SUMS.txt"
+(
+  cd "$DIST"
+  sha256sum "$MODULE_NAME" | tee SHA256SUMS.txt
+)
 
 printf 'Built %s\n' "$MODULE_ZIP"
