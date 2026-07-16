@@ -88,6 +88,7 @@ cp "$CTL" "$STAGE/bin/rzctl"
 chmod 0755 \
   "$STAGE/post-fs-data.sh" \
   "$STAGE/service.sh" \
+  "$STAGE/action.sh" \
   "$STAGE/uninstall.sh" \
   "$STAGE/bin/rzguestd" \
   "$STAGE/bin/rzsupervisord" \
