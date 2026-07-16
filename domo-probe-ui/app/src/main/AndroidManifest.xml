@@ -25,13 +25,17 @@
             android:resource="@array/xposed_scope" />
 
         <activity
-            android:name=".ProbeActivity"
+            android:name=".ActiveInjectionActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".ProbeActivity"
+            android:exported="false" />
 
         <provider
             android:name=".ProbeProvider"
