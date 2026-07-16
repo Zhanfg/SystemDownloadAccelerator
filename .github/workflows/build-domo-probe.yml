@@ -8,6 +8,12 @@ on:
     paths:
       - 'domo-probe/**'
       - '.github/workflows/build-domo-probe.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'domo-probe/**'
+      - '.github/workflows/build-domo-probe.yml'
 
 permissions:
   contents: read
