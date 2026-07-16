@@ -1,0 +1,1 @@
+-keep class io.github.zhanfg.sda.domo.DomoProbeHook { *; }
