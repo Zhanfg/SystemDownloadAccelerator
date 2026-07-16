@@ -40,6 +40,16 @@ pub extern "C" fn sda_runtime_is_initialized() -> bool {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn sda_runtime_bootstrap_fd() -> RawFd {
+    RUNTIME.get().map_or(-1, |runtime| runtime.bootstrap_fd)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sda_runtime_process_name_len() -> usize {
+    RUNTIME.get().map_or(0, |runtime| runtime.process_name.len())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn sda_companion_handle(client_fd: RawFd) {
     let _ = ffi_guard(|| companion_handle(client_fd));
 }
