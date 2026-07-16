@@ -2,9 +2,8 @@ package io.github.zhanfg.sda.domo;
 
 import android.app.Activity;
 import android.app.DownloadManager;
-import android.content.ClipboardManager;
 import android.content.ClipData;
-import android.content.Context;
+import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -28,13 +27,14 @@ import java.text.DateFormat;
 import java.util.Date;
 
 public final class ProbeActivity extends Activity {
-    private static final String DEFAULT_URL = "https://speed.cloudflare.com/__down?bytes=5242880";
-    private static final long TEST_TIMEOUT_MS = 20_000L;
+    private static final String DEFAULT_URL = "https://speed.cloudflare.com/__down?bytes=33554432";
+    private static final long TEST_TIMEOUT_MS = 25_000L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences preferences;
     private DownloadManager downloadManager;
     private TextView statusView;
+    private TextView stageView;
     private TextView detailView;
     private EditText urlView;
     private long testStartedAt;
@@ -51,16 +51,16 @@ public final class ProbeActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        preferences = getSharedPreferences(ProbeResultReceiver.PREFS, MODE_PRIVATE);
+        preferences = getSharedPreferences(ProbeProvider.PREFS, MODE_PRIVATE);
         downloadManager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
         setContentView(buildContent());
-        renderStoredResult(false);
+        renderCurrentState(false);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        renderStoredResult(false);
+        renderCurrentState(false);
     }
 
     @Override
@@ -70,13 +70,12 @@ public final class ProbeActivity extends Activity {
     }
 
     private View buildContent() {
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setFillViewport(true);
-
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20), dp(24), dp(20), dp(32));
-        scrollView.addView(root, new ScrollView.LayoutParams(
+        scroll.addView(root, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -85,42 +84,43 @@ public final class ProbeActivity extends Activity {
         root.addView(title);
 
         TextView subtitle = text(
-                "用于验证系统下载服务的通知 Hook。当前版本只读取 tag、id 和 channel，"
-                        + "不会修改通知，也不会接管下载。",
+                "依次检查 LSPosed 注入、通知提交入口和 active 下载通知。"
+                        + "本版本不会修改通知，也不会改变下载行为。",
                 15,
                 Color.rgb(80, 86, 96));
         subtitle.setPadding(0, dp(8), 0, dp(18));
         root.addView(subtitle);
 
-        statusView = text("尚未测试", 17, Color.rgb(60, 64, 72));
+        statusView = text("正在读取状态", 18, Color.rgb(60, 64, 72));
         statusView.setTypeface(Typeface.DEFAULT_BOLD);
-        statusView.setPadding(dp(16), dp(16), dp(16), dp(16));
+        statusView.setPadding(dp(16), dp(16), dp(16), dp(10));
         statusView.setBackground(rounded(Color.rgb(239, 241, 245), 14));
         root.addView(statusView, matchWrap());
 
-        detailView = text("等待 Hook 回执。", 14, Color.rgb(60, 64, 72));
+        stageView = text("① 模块安装  ② LSPosed 注入  ③ 通知命中  ④ active 命中",
+                13,
+                Color.rgb(85, 91, 102));
+        stageView.setPadding(dp(16), 0, dp(16), dp(16));
+        root.addView(stageView, matchWrapWithTop(-8));
+
+        detailView = text("", 14, Color.rgb(60, 64, 72));
         detailView.setTextIsSelectable(true);
-        detailView.setPadding(0, dp(14), 0, dp(16));
+        detailView.setPadding(0, dp(14), 0, dp(18));
         root.addView(detailView);
 
-        TextView scopeTitle = text("测试前检查", 16, Color.rgb(25, 28, 33));
-        scopeTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(scopeTitle);
-
         TextView scope = text(
-                "1. 在 LSPosed 中仅勾选 com.android.providers.downloads\n"
-                        + "2. 安装或更新后重启一次该作用域\n"
-                        + "3. 不需要勾选 SystemUI，也不需要运行终端",
+                "LSPosed 作用域只勾选 com.android.providers.downloads。更新 APK 后需要重启一次该作用域，"
+                        + "不需要勾选 SystemUI，也不需要执行终端命令。",
                 14,
                 Color.rgb(70, 76, 86));
-        scope.setPadding(0, dp(8), 0, dp(18));
+        scope.setPadding(0, 0, 0, dp(16));
         root.addView(scope);
 
         Button listen = button("监听下一次系统下载");
         listen.setOnClickListener(v -> beginListening(false));
-        root.addView(listen, matchWrapWithTop(0));
+        root.addView(listen, matchWrap());
 
-        TextView urlLabel = text("一键测试下载地址", 14, Color.rgb(70, 76, 86));
+        TextView urlLabel = text("一键测试地址", 14, Color.rgb(70, 76, 86));
         urlLabel.setPadding(0, dp(18), 0, dp(6));
         root.addView(urlLabel);
 
@@ -141,11 +141,11 @@ public final class ProbeActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         root.addView(row, matchWrapWithTop(10));
 
-        Button refresh = button("刷新结果");
-        refresh.setOnClickListener(v -> renderStoredResult(true));
+        Button refresh = button("刷新状态");
+        refresh.setOnClickListener(v -> renderCurrentState(true));
         row.addView(refresh, weightedButton());
 
-        Button cancel = button("取消测试任务");
+        Button cancel = button("取消测试下载");
         cancel.setOnClickListener(v -> cancelTest(false));
         LinearLayout.LayoutParams cancelParams = weightedButton();
         cancelParams.setMarginStart(dp(8));
@@ -155,17 +155,10 @@ public final class ProbeActivity extends Activity {
         copy.setOnClickListener(v -> copySummary());
         root.addView(copy, matchWrapWithTop(10));
 
-        Button clear = button("清除测试结果");
+        Button clear = button("清除检测记录");
         clear.setOnClickListener(v -> clearResult());
         root.addView(clear, matchWrapWithTop(8));
-
-        TextView footer = text(
-                "判定标准：收到 channel=active 的回执即表示 DownloadProvider 通知 Hook 已准确命中。",
-                13,
-                Color.rgb(100, 106, 116));
-        footer.setPadding(0, dp(18), 0, 0);
-        root.addView(footer);
-        return scrollView;
+        return scroll;
     }
 
     private void beginListening(boolean testDownload) {
@@ -178,46 +171,39 @@ public final class ProbeActivity extends Activity {
                 .remove("last_received_at")
                 .apply();
         setStatus(
-                testDownload ? "测试下载已提交，等待通知 Hook…" : "正在监听下一次系统下载…",
+                testDownload ? "测试下载已提交" : "正在监听下一次下载",
                 Color.rgb(42, 91, 176),
                 Color.rgb(229, 238, 255));
-        detailView.setText("最多等待 20 秒。收到系统下载 active 通知后会自动显示结果。");
+        detailView.setText("正在等待 DownloadProvider 启动并返回各阶段状态，最长 25 秒。");
         handler.post(pollRunnable);
     }
 
     private void startTestDownload() {
         String rawUrl = urlView.getText().toString().trim();
-        if (rawUrl.isEmpty()) {
-            Toast.makeText(this, "请输入下载地址", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
         try {
             Uri uri = Uri.parse(rawUrl);
-            if (uri.getScheme() == null || (!"http".equalsIgnoreCase(uri.getScheme())
-                    && !"https".equalsIgnoreCase(uri.getScheme()))) {
+            String scheme = uri.getScheme();
+            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
                 throw new IllegalArgumentException("只支持 HTTP/HTTPS 地址");
             }
 
             beginListening(true);
-            String fileName = "domo_probe_" + System.currentTimeMillis() + ".bin";
             DownloadManager.Request request = new DownloadManager.Request(uri)
                     .setTitle("下载测试文件")
                     .setDescription("正在检查系统下载通知")
                     .setAllowedOverMetered(true)
                     .setAllowedOverRoaming(true)
-                    .setNotificationVisibility(
-                            DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                     .setDestinationInExternalFilesDir(
                             this,
                             Environment.DIRECTORY_DOWNLOADS,
-                            fileName);
+                            "domo_probe_" + System.currentTimeMillis() + ".bin");
             testDownloadId = downloadManager.enqueue(request);
             preferences.edit().putLong("current_download_id", testDownloadId).apply();
         } catch (Throwable throwable) {
             waiting = false;
             handler.removeCallbacks(pollRunnable);
-            setStatus("无法提交测试下载", Color.rgb(170, 45, 45), Color.rgb(255, 232, 232));
+            setStatus("测试下载提交失败", Color.rgb(170, 45, 45), Color.rgb(255, 232, 232));
             detailView.setText(throwable.getClass().getSimpleName() + ": " + throwable.getMessage());
         }
     }
@@ -230,58 +216,81 @@ public final class ProbeActivity extends Activity {
         long activeAt = preferences.getLong("last_active_at", 0L);
         if (activeAt >= testStartedAt) {
             waiting = false;
-            setStatus("Hook 已准确命中", Color.rgb(22, 122, 72), Color.rgb(225, 247, 235));
-            renderStoredResult(true);
+            renderCurrentState(true);
             cancelTest(true);
             return;
         }
 
-        long anyAt = preferences.getLong("last_received_at", 0L);
-        if (anyAt >= testStartedAt) {
-            String channel = preferences.getString("last_channel", "<null>");
-            detailView.setText("已收到 DownloadProvider 通知，但当前 channel=" + channel
-                    + "。继续等待 active 通知…");
-        }
-
+        renderCurrentState(false);
         if (System.currentTimeMillis() - testStartedAt >= TEST_TIMEOUT_MS) {
             waiting = false;
-            setStatus("未收到 Hook 回执", Color.rgb(170, 45, 45), Color.rgb(255, 232, 232));
-            detailView.setText(
-                    "请确认 LSPosed 已启用本模块、作用域仅勾选 com.android.providers.downloads，"
-                            + "并重启过该作用域。无需运行终端。");
+            renderTimeoutState();
             return;
         }
-        handler.postDelayed(pollRunnable, 400L);
+        handler.postDelayed(pollRunnable, 350L);
     }
 
-    private void renderStoredResult(boolean announce) {
+    private void renderCurrentState(boolean announce) {
         long activeAt = preferences.getLong("last_active_at", 0L);
         long anyAt = preferences.getLong("last_received_at", 0L);
+        long readyAt = preferences.getLong("hook_ready_at", 0L);
+        int hookCount = preferences.getInt("hook_count", 0);
+        String hookError = preferences.getString("hook_error", null);
+
         if (activeAt > 0L) {
-            String tag = preferences.getString("last_active_tag", "<null>");
-            int id = preferences.getInt("last_active_id", 0);
-            String channel = preferences.getString("last_active_channel", "<null>");
-            setStatus("Hook 已准确命中", Color.rgb(22, 122, 72), Color.rgb(225, 247, 235));
-            detailView.setText(buildDetails(activeAt, tag, id, channel, true));
-            if (announce) {
-                Toast.makeText(this, "已读取最新 active 回执", Toast.LENGTH_SHORT).show();
-            }
+            setStatus("④ active 下载通知已命中", Color.rgb(22, 122, 72), Color.rgb(225, 247, 235));
+            detailView.setText(buildNotificationDetails(true));
         } else if (anyAt > 0L) {
-            String tag = preferences.getString("last_tag", "<null>");
-            int id = preferences.getInt("last_id", 0);
-            String channel = preferences.getString("last_channel", "<null>");
-            setStatus("已命中非活动通知", Color.rgb(150, 92, 17), Color.rgb(255, 242, 219));
-            detailView.setText(buildDetails(anyAt, tag, id, channel, false));
-        } else if (!waiting) {
-            setStatus("尚未测试", Color.rgb(60, 64, 72), Color.rgb(239, 241, 245));
-            detailView.setText("点击“一键触发并检查”，或先点击“监听下一次系统下载”再从其他应用下载文件。");
+            setStatus("③ 已命中通知提交入口", Color.rgb(150, 92, 17), Color.rgb(255, 242, 219));
+            detailView.setText(buildNotificationDetails(false));
+        } else if (readyAt > 0L && hookCount > 0) {
+            setStatus("② LSPosed 已注入", Color.rgb(42, 91, 176), Color.rgb(229, 238, 255));
+            detailView.setText("Hook 安装时间：" + formatTime(readyAt)
+                    + "\n已安装通知入口数：" + hookCount
+                    + "\n当前尚未捕获通知，请触发一次系统下载。"
+                    + (hookError == null ? "" : "\n附加信息：" + hookError));
+        } else {
+            setStatus("① 应用已安装，但未确认注入", Color.rgb(170, 45, 45), Color.rgb(255, 232, 232));
+            detailView.setText("尚未收到 DownloadProvider 的注入握手。"
+                    + "\n请在 LSPosed 中启用模块，只勾选 com.android.providers.downloads，"
+                    + "然后重启该作用域，再点击“一键触发并检查”。");
+        }
+
+        if (announce) {
+            Toast.makeText(this, "状态已刷新", Toast.LENGTH_SHORT).show();
         }
     }
 
-    private String buildDetails(long time, String tag, int id, String channel, boolean active) {
-        return "结果：" + (active ? "PASS" : "WAIT")
-                + "\n时间：" + DateFormat.getDateTimeInstance().format(new Date(time))
+    private void renderTimeoutState() {
+        long anyAt = preferences.getLong("last_received_at", 0L);
+        long readyAt = preferences.getLong("hook_ready_at", 0L);
+        int hookCount = preferences.getInt("hook_count", 0);
+
+        if (anyAt >= testStartedAt) {
+            setStatus("超时：仅命中非 active 通知", Color.rgb(150, 92, 17), Color.rgb(255, 242, 219));
+            detailView.setText(buildNotificationDetails(false));
+        } else if (readyAt > 0L && hookCount > 0) {
+            setStatus("超时：已注入但未捕获通知", Color.rgb(170, 45, 45), Color.rgb(255, 232, 232));
+            detailView.setText("LSPosed 注入已确认，Hook 数量=" + hookCount
+                    + "，但测试期间没有收到通知提交。下一版将据此调整通知入口。");
+        } else {
+            setStatus("超时：LSPosed 未注入", Color.rgb(170, 45, 45), Color.rgb(255, 232, 232));
+            detailView.setText("DownloadProvider 没有返回注入握手。请检查模块是否启用、作用域是否正确，"
+                    + "以及更新后是否重启了下载服务作用域。");
+        }
+    }
+
+    private String buildNotificationDetails(boolean active) {
+        String prefix = active ? "last_active_" : "last_";
+        long time = preferences.getLong(active ? "last_active_at" : "last_received_at", 0L);
+        String tag = preferences.getString(prefix + "tag", "<null>");
+        int id = preferences.getInt(prefix + "id", 0);
+        String channel = preferences.getString(prefix + "channel", "<null>");
+        String source = preferences.getString(prefix + "source", "<unknown>");
+        return "结果：" + (active ? "PASS" : "PARTIAL")
+                + "\n时间：" + formatTime(time)
                 + "\n进程：com.android.providers.downloads"
+                + "\n入口：" + source
                 + "\ntag：" + tag
                 + "\nid：" + id
                 + "\nchannel：" + channel
@@ -299,7 +308,7 @@ public final class ProbeActivity extends Activity {
         testDownloadId = -1L;
         preferences.edit().remove("current_download_id").apply();
         if (!quiet) {
-            Toast.makeText(this, "已请求取消测试任务", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "已请求取消测试下载", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -308,21 +317,25 @@ public final class ProbeActivity extends Activity {
         handler.removeCallbacks(pollRunnable);
         preferences.edit().clear().apply();
         testDownloadId = -1L;
-        renderStoredResult(false);
-        Toast.makeText(this, "测试结果已清除", Toast.LENGTH_SHORT).show();
+        renderCurrentState(false);
+        Toast.makeText(this, "检测记录已清除", Toast.LENGTH_SHORT).show();
     }
 
     private void copySummary() {
-        String text = statusView.getText() + "\n" + detailView.getText();
+        String summary = statusView.getText() + "\n" + detailView.getText();
         ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (clipboard != null) {
-            clipboard.setPrimaryClip(ClipData.newPlainText("Domo probe result", text));
+            clipboard.setPrimaryClip(ClipData.newPlainText("Domo probe result", summary));
             Toast.makeText(this, "诊断摘要已复制", Toast.LENGTH_SHORT).show();
         }
     }
 
-    private void setStatus(String text, int foreground, int background) {
-        statusView.setText(text);
+    private String formatTime(long time) {
+        return time <= 0L ? "<none>" : DateFormat.getDateTimeInstance().format(new Date(time));
+    }
+
+    private void setStatus(String value, int foreground, int background) {
+        statusView.setText(value);
         statusView.setTextColor(foreground);
         statusView.setBackground(rounded(background, 14));
     }
@@ -336,9 +349,9 @@ public final class ProbeActivity extends Activity {
         return view;
     }
 
-    private Button button(String text) {
+    private Button button(String value) {
         Button button = new Button(this);
-        button.setText(text);
+        button.setText(value);
         button.setAllCaps(false);
         button.setTextSize(14);
         button.setMinHeight(dp(48));
