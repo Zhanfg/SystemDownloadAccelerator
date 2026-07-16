@@ -37,11 +37,11 @@ jobs:
         run: |
           mkdir -p dist
           cp domo-probe-ui/app/build/outputs/apk/debug/app-debug.apk \
-            dist/SDA-Domo-Probe-v0.1.2.apk
-          sha256sum dist/SDA-Domo-Probe-v0.1.2.apk | tee dist/SHA256SUMS.txt
+            dist/SDA-Domo-Probe-v0.1.3.apk
+          sha256sum dist/SDA-Domo-Probe-v0.1.3.apk | tee dist/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SDA-Domo-Probe-v0.1.2
+          name: SDA-Domo-Probe-v0.1.3
           path: dist/*
           if-no-files-found: error
