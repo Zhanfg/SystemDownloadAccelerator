@@ -99,7 +99,7 @@ chmod 0644 "$STAGE/zygisk/arm64-v8a.so" "$STAGE/module.prop"
 "$READELF" -Ws "$STAGE/zygisk/arm64-v8a.so" | grep -q 'zygisk_companion_entry'
 "$READELF" -lW "$STAGE/zygisk/arm64-v8a.so" | awk '/LOAD/ { if ($NF != "0x4000") exit 1 }'
 
-MODULE_NAME="Rust-Zygisk-Runtime-Guest-v0.2.0.zip"
+MODULE_NAME="Rust-Zygisk-Runtime-Guest-v0.3.0.zip"
 MODULE_ZIP="$DIST/$MODULE_NAME"
 (
   cd "$STAGE"
