@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 1;
-const MAGIC: [u8; 4] = *b"RZG1";
+pub const PROTOCOL_VERSION: u16 = 2;
+const MAGIC: [u8; 4] = *b"RZG2";
 const HEADER_LEN: usize = 20;
 const MAX_BODY_LEN: usize = 64 * 1024;
 
@@ -12,18 +12,26 @@ pub enum MessageKind {
     Ack = 2,
     QueryStatus = 3,
     Status = 4,
+    QueryHost = 5,
+    HostStatus = 6,
+    QueryDoctor = 7,
+    DoctorStatus = 8,
     Error = 255,
 }
 
 impl TryFrom<u16> for MessageKind {
     type Error = ProtocolError;
 
-    fn try_from(value: u16) -> Result<Self, ProtocolError> {
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::RegisterProcess),
             2 => Ok(Self::Ack),
             3 => Ok(Self::QueryStatus),
             4 => Ok(Self::Status),
+            5 => Ok(Self::QueryHost),
+            6 => Ok(Self::HostStatus),
+            7 => Ok(Self::QueryDoctor),
+            8 => Ok(Self::DoctorStatus),
             255 => Ok(Self::Error),
             other => Err(ProtocolError::UnknownKind(other)),
         }
@@ -153,6 +161,15 @@ mod tests {
         message.write_to(&mut encoded).unwrap();
         let decoded = Message::read_from(&mut encoded.as_slice()).unwrap();
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn host_query_round_trip() {
+        let message = Message::new(MessageKind::QueryHost, 42, 0, "");
+        let mut encoded = Vec::new();
+        message.write_to(&mut encoded).unwrap();
+        let decoded = Message::read_from(&mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded.kind, MessageKind::QueryHost);
     }
 
     #[test]
