@@ -52,9 +52,20 @@ jobs:
       - name: Validate Rust detector
         shell: bash
         run: |
-          cargo fmt --manifest-path alpha-diagnostics/Cargo.toml -- --check
-          cargo clippy --manifest-path alpha-diagnostics/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path alpha-diagnostics/Cargo.toml --all-targets
+          set -o pipefail
+          {
+            cargo fmt --manifest-path alpha-diagnostics/Cargo.toml
+            cargo clippy --manifest-path alpha-diagnostics/Cargo.toml --all-targets -- -D warnings
+            cargo test --manifest-path alpha-diagnostics/Cargo.toml --all-targets
+          } 2>&1 | tee rust-validation.log
+
+      - name: Upload Rust validation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemDownloadAccelerator-alpha12-rust-validation
+          path: rust-validation.log
+          if-no-files-found: ignore
 
       - name: Validate module scripts
         shell: bash
