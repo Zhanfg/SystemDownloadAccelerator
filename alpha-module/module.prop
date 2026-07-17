@@ -1,0 +1,7 @@
+id=system_download_accelerator
+name=System Download Accelerator Alpha
+version=0.3.0-alpha12+diag1
+versionCode=1301
+author=Zhanfg
+maintainer=Zhanfg
+description=SystemDownloadAccelerator Alpha 12 with an embedded LSPosed APK and a Rust one-shot Action diagnostic. The detector is read-only and does not run persistently.
