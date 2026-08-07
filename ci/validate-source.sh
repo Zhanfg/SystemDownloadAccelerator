@@ -165,8 +165,10 @@ grep -Fq 'resume Range request downgraded to HTTP 200' "$PROTOCOL" \
   || fail "HTTP 200 resume downgrade gate missing"
 grep -Fq 'resume offset mismatch' "$PROTOCOL" \
   || fail "206 request/response alignment gate missing"
-grep -Fq 'bounded original Range request is not safe to expand' "$PROTOCOL" \
-  || fail "bounded Range expansion gate missing"
+grep -Fq 'bounded original Range response mismatch' "$PROTOCOL" \
+  || fail "bounded Range response-alignment gate missing"
+grep -Fq 'bounded original Range does not reach resource end' "$PROTOCOL" \
+  || fail "bounded partial-window rejection gate missing"
 grep -Fq 'base Content-Range does not reach resource end' "$PROTOCOL" \
   || fail "partial base 206 expansion gate missing"
 grep -Fq 'destination offset mismatch' "$PROTOCOL" \
@@ -178,8 +180,8 @@ grep -Fq 'freshHttp200IsAcceptedOnlyWhenNoRangeWasRequested' "$TESTS" \
   || fail "fresh/resume HTTP 200 invariant test missing"
 grep -Fq 'resumed206MustMatchOpenEndedOriginalRequest' "$TESTS" \
   || fail "open-ended resume alignment invariant test missing"
-grep -Fq 'boundedResumeRequestFailsClosed' "$TESTS" \
-  || fail "bounded resume fail-closed test missing"
+grep -Fq 'boundedResumeRequestIsAcceptedOnlyWhenItReachesEof' "$TESTS" \
+  || fail "bounded EOF-resume compatibility test missing"
 grep -Fq 'resumed206MustReachResourceEnd' "$TESTS" \
   || fail "partial base 206 rejection test missing"
 grep -Fq 'destinationOffsetMustMatchResolvedResumeWindow' "$TESTS" \
