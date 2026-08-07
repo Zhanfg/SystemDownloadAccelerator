@@ -52,6 +52,8 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core:1.19.0")
+    // 1.17.0 is the API 36 generation and contains Android 16 Live Update APIs.
+    // Core 1.18+ requires API 36.1, while 1.19 also requires AGP 9.1.
+    implementation("androidx.core:core:1.17.0")
     compileOnly("io.github.libxposed:api:102.0.0")
 }
