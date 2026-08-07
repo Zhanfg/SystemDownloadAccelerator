@@ -286,9 +286,20 @@ configureWindow();
         }
 
         LinearLayout hero = card(primary, 26);
-        TextView state = text("模块已启用", 21, onPrimary, true);
-        TextView detail = text("系统下载服务统一拦截 · 异常自动回退", 14,
-                withAlpha(onPrimary, 210), false);
+        String engineStatus = preferences.getString("engine_status", "idle");
+        String engineDetail = preferences.getString("engine_detail", "尚无 Range 运行记录");
+        int engineThreads = preferences.getInt("engine_threads", 0);
+        String engineLabel;
+        if ("active".equals(engineStatus)) engineLabel = "Range 加速运行中";
+        else if ("complete".equals(engineStatus)) engineLabel = "最近一次 Range 已完成";
+        else if ("fallback".equals(engineStatus)) engineLabel = "最近一次使用系统回退";
+        else if ("error".equals(engineStatus)) engineLabel = "Range 任务异常";
+        else if ("disabled".equals(engineStatus)) engineLabel = "Range 加速已关闭";
+        else engineLabel = "等待系统下载任务";
+        String runtimeDetail = engineDetail;
+        if (engineThreads > 0) runtimeDetail += " · " + engineThreads + " 线程";
+        TextView state = text(engineLabel, 21, onPrimary, true);
+        TextView detail = text(runtimeDetail, 14, withAlpha(onPrimary, 210), false);
         detail.setPadding(0, dp(6), 0, dp(16));
         hero.addView(state);
         hero.addView(detail);
@@ -306,7 +317,10 @@ configureWindow();
         service.addView(infoRow("Modern Xposed API", "102"));
         service.addView(divider());
         service.addView(infoRow("最高线程配置", String.valueOf(
-                preferences.getInt("max_threads", 1024))));
+                preferences.getInt("max_threads", 8))));
+        service.addView(divider());
+        service.addView(infoRow("最近引擎状态", preferences.getString(
+                "engine_status", "等待任务")));
         content.addView(service);
 
         content.addView(sectionLabel("快速操作"));
@@ -344,22 +358,21 @@ configureWindow();
                 "不支持 Range 时使用系统原始传输",
                 "enabled", true));
         threads.addView(divider());
-        threads.addView(numberRow("最高线程数", "允许范围 1–1024",
-                "max_threads", 1024));
+        threads.addView(numberRow("最高线程数", "硬限制 2–16，默认 8",
+                "max_threads", 8));
         threads.addView(divider());
-        threads.addView(numberRow("初始线程数", "自动调度会继续调整",
+        threads.addView(numberRow("初始线程数", "范围 2–最高线程数，默认 4",
                 "initial_threads", 4));
         threads.addView(divider());
-        threads.addView(numberRow("启用阈值（MiB）", "小文件保持系统单线程",
+        threads.addView(numberRow("启用阈值（MiB）", "8–4096，小文件保持系统原始传输",
                 "min_size_mb", 32));
         threads.addView(divider());
-        threads.addView(switchRow("严格校验 Range",
-                "验证 206、Content-Range 与 ETag",
-                "strict_range", true));
+        threads.addView(numberRow("分片大小（MiB）", "4–64，临时分片采用有界窗口",
+                "chunk_size_mb", 16));
         threads.addView(divider());
-        threads.addView(switchRow("失败时自动回退",
-                "避免下载服务崩溃或文件损坏",
-                "auto_fallback", true));
+        threads.addView(infoRow("Range 完整性校验", "强制：206 + Content-Range + If-Range"));
+        threads.addView(divider());
+        threads.addView(infoRow("失败策略", "预检失败直接回退；运行中失败交由系统重试/续传"));
         content.addView(threads);
 
         content.addView(sectionLabel("保存位置"));
@@ -826,9 +839,26 @@ configureWindow();
             value = Integer.parseInt(input.getText().toString());
         } catch (Throwable ignored) {
         }
-        value = Math.max(1, Math.min(1024, value));
+
+        SharedPreferences.Editor editor = preferences.edit();
+        if ("max_threads".equals(key)) {
+            value = Math.max(2, Math.min(16, value));
+            int initial = Math.max(2, Math.min(value,
+                    preferences.getInt("initial_threads", 4)));
+            editor.putInt("initial_threads", initial);
+        } else if ("initial_threads".equals(key)) {
+            int maximum = Math.max(2, Math.min(16,
+                    preferences.getInt("max_threads", 8)));
+            value = Math.max(2, Math.min(maximum, value));
+        } else if ("chunk_size_mb".equals(key)) {
+            value = Math.max(4, Math.min(64, value));
+        } else if ("min_size_mb".equals(key)) {
+            value = Math.max(8, Math.min(4096, value));
+        } else {
+            value = Math.max(1, Math.min(4096, value));
+        }
         input.setText(String.valueOf(value));
-        preferences.edit().putInt(key, value).apply();
+        editor.putInt(key, value).apply();
     }
 
     private View metricRow(View... metrics) {
