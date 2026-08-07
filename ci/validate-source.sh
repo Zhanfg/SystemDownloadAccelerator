@@ -25,8 +25,12 @@ for file in \
   [ -s "$file" ] || fail "required file missing: $file"
 done
 
+# The abandoned Alpha 12 engine wrote parallel HTTP workers directly into the
+# DownloadProvider-owned destination FD. It must never return to the compiled tree.
 [ ! -e app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java ] \
-  || fail "unvalidated Range engine must remain outside the compiled source tree"
+  || fail "legacy direct-write Range engine must remain outside the compiled source tree"
+[ ! -e app/src/main/java/io/github/zhanfg/sda/xposed/DownloadConfirmationHook.java ] \
+  || fail "legacy helper tied to the direct-write engine must remain quarantined"
 [ ! -d .bootstrap ] || fail "encoded bootstrap directory must not return"
 if find . -maxdepth 1 -type f -name '.ci-*' -print -quit | grep -q .; then
   fail "temporary CI trigger files must not be committed"
@@ -70,7 +74,7 @@ application = root.find('application')
 if application is None:
     raise SystemExit('application element missing')
 if application.attrib.get(ns + 'name') != '.SafetyMigrationApplication':
-    raise SystemExit('fail-closed settings migration application is missing')
+    raise SystemExit('Range-engine settings migration application is missing')
 if application.attrib.get(ns + 'allowBackup') != 'false':
     raise SystemExit('download history must not be included in Android backup')
 
@@ -119,7 +123,7 @@ expected_entries = [
 if entries != expected_entries:
     raise SystemExit(f'unsafe or unexpected libxposed entry list: {entries}')
 if any('RealDownloadAcceleratorModule' in item for item in entries):
-    raise SystemExit('unvalidated Range engine must not be loaded')
+    raise SystemExit('legacy direct-write Range engine must not be loaded')
 
 lint_root = ET.parse('app/lint.xml').getroot()
 issues = {item.attrib.get('id'): item for item in lint_root.findall('issue')}
@@ -135,11 +139,39 @@ grep -Fq 'minApiVersion=102' app/src/main/resources/META-INF/xposed/module.prop 
   || fail "libxposed minimum API mismatch"
 grep -Fq 'targetApiVersion=102' app/src/main/resources/META-INF/xposed/module.prop \
   || fail "libxposed target API mismatch"
-grep -Fq 'return chain.proceed();' app/src/main/java/io/github/zhanfg/sda/ModuleMain.java \
-  || fail "system transfer return value is not preserved"
-grep -Fq '.putBoolean("enabled", false)' \
-  app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java \
-  || fail "legacy Range setting is not reset fail-closed"
+
+ENGINE=app/src/main/java/io/github/zhanfg/sda/ModuleMain.java
+MIGRATION=app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java
+
+grep -Fq 'class ParallelRangeInputStream extends InputStream' "$ENGINE" \
+  || fail "functional parallel Range input stream is missing"
+grep -Fq 'Object result = chain.proceed(args);' "$ENGINE" \
+  || fail "accelerated input is not handed back to the original system copy loop"
+grep -Fq 'connection.setRequestProperty("Range", "bytes=" + start + "-" + end);' "$ENGINE" \
+  || fail "worker HTTP Range request is missing"
+grep -Fq 'connection.setRequestProperty("If-Range", strongEtag);' "$ENGINE" \
+  || fail "strong validator If-Range protection is missing"
+grep -Fq 'server rejected strict byte-range probe' "$ENGINE" \
+  || fail "strict Range preflight is missing"
+grep -Fq 'Math.min(preflight.threads, chunkCount)' "$ENGINE" \
+  || fail "Range worker count is not bounded by planned chunks"
+grep -Fq 'maxThreads = clamp(preferences.getInt("max_threads", 8), 2, 16);' "$ENGINE" \
+  || fail "runtime worker hard cap must remain 16"
+grep -Fq 'chunkSizeMb = clamp(preferences.getInt("chunk_size_mb", 16), 4, 64);' "$ENGINE" \
+  || fail "bounded temporary chunk size gate is missing"
+grep -Fq 'root.getUsableSpace() < spoolBudget + reserve' "$ENGINE" \
+  || fail "temporary-spool free-space preflight is missing"
+if grep -Fq 'Os.pwrite' "$ENGINE" || grep -Fq 'FileChannel positional write' "$ENGINE"; then
+  fail "destination direct-write code must not exist in the active engine"
+fi
+
+grep -Fq 'ENGINE_MIGRATION_VERSION = 14' "$MIGRATION" \
+  || fail "functional Range-engine migration version mismatch"
+grep -Fq '.putBoolean("enabled", true)' "$MIGRATION" \
+  || fail "functional Range engine is not enabled after Alpha 13 migration"
+grep -Fq 'maxThreads = clamp(preferences.getInt("max_threads", 8), 2, 16);' "$MIGRATION" \
+  || fail "migration does not clamp legacy 1024-thread setting"
+
 grep -Fq 'new ProcessBuilder("su", "-c", "id -u")' \
   app/src/main/java/io/github/zhanfg/sda/RootAccess.java \
   || fail "root probe is no longer the fixed id -u command"
@@ -165,9 +197,9 @@ for source in \
 done
 if grep -R -n 'RealDownloadAcceleratorModule' \
   app/src/main app/proguard-rules.pro 2>/dev/null; then
-  fail "quarantined Range engine is still referenced by the compiled app"
+  fail "legacy direct-write Range engine is still referenced by the compiled app"
 fi
 grep -Fq 'appVersionCode=14' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
-echo "Direct-source validation passed."
+echo "Direct-source validation passed. Functional bounded Range engine is present."
