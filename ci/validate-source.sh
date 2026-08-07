@@ -24,9 +24,27 @@ for file in \
   app/src/main/resources/META-INF/xposed/java_init.list \
   app/src/main/resources/META-INF/xposed/module.prop \
   app/src/main/resources/META-INF/xposed/scope.list \
-  alpha-module/module.prop; do
+  alpha-module/module.prop \
+  tools/alpha15-device-validation.sh \
+  docs/ALPHA15-DEVICE-VALIDATION.md; do
   [ -s "$file" ] || fail "required file missing: $file"
 done
+
+sh -n tools/alpha15-device-validation.sh \
+  || fail "Alpha 15 device validation helper has invalid shell syntax"
+
+grep -Fq 'start [label]' tools/alpha15-device-validation.sh \
+  || fail "device validation start mode missing"
+grep -Fq 'finish [downloaded_file] [expected_sha256]' tools/alpha15-device-validation.sh \
+  || fail "device validation finish/hash mode missing"
+grep -Fq 'SDA-Alpha15-Validation-' tools/alpha15-device-validation.sh \
+  || fail "device validation evidence archive output missing"
+grep -Fq 'Fresh Range download' docs/ALPHA15-DEVICE-VALIDATION.md \
+  || fail "fresh Range device acceptance case missing"
+grep -Fq 'Resume from partial file' docs/ALPHA15-DEVICE-VALIDATION.md \
+  || fail "resume device acceptance case missing"
+grep -Fq 'VPN / proxy / cellular routing' docs/ALPHA15-DEVICE-VALIDATION.md \
+  || fail "network-routing device acceptance case missing"
 
 [ ! -e app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java ] \
   || fail "legacy direct-write Range engine must remain outside the compiled source tree"
@@ -208,4 +226,4 @@ grep -Fq 'version=0.3.0-alpha15+diag1' alpha-module/module.prop \
 grep -Fq 'appVersionCode=16' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
-echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants and JVM HTTP contract tests are present."
+echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants, JVM HTTP contract tests and device validation tooling are present."
