@@ -23,17 +23,15 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           path = Path("app/src/main/java/io/github/zhanfg/sda/ModuleMain.java")
           text = path.read_text(encoding="utf-8")
-          old = '''        static Validator from(HttpURLConnection connection) {
-              String etag = trim(connection.getHeaderField("ETag"));
-              if (etag != null && etag.regionMatches(true, 0, "W/", 0, 2)) etag = null;
-              String modified = trim(connection.getHeaderField("Last-Modified"));
-              return new Validator(etag, modified);
-          }
-          '''
-          new = '''        static Validator from(HttpURLConnection connection) {
+          marker = 'return new Validator(etag, modified);'
+          if marker not in text:
+              raise SystemExit("expected legacy Validator.from body is absent")
+
+          replacement = '''        static Validator from(HttpURLConnection connection) {
               String etag = trim(connection.getHeaderField("ETag"));
               if (etag != null && etag.regionMatches(true, 0, "W/", 0, 2)) etag = null;
               if (etag != null) return new Validator(etag, null);
@@ -53,19 +51,28 @@ jobs:
                   return new Validator(null, null);
               }
               return new Validator(null, modified);
-          }
-          '''
-          if old not in text:
-              raise SystemExit("Validator.from source did not match expected Alpha15 baseline")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          }'''
+
+          pattern = re.compile(
+              r'        static Validator from\(HttpURLConnection connection\) \{.*?\n        \}(?=\n\n        boolean stable\(\))',
+              re.DOTALL,
+          )
+          updated, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"expected exactly one Validator.from block, got {count}")
+          path.write_text(updated, encoding="utf-8")
 
       - name: Verify focused diff
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
+          changed="$(git diff --name-only)"
+          [ "$changed" = 'app/src/main/java/io/github/zhanfg/sda/ModuleMain.java' ]
           git diff -- app/src/main/java/io/github/zhanfg/sda/ModuleMain.java
           grep -Fq 'RangeProtocol.isStrongLastModified(modifiedMillis, responseDateMillis)' \
+            app/src/main/java/io/github/zhanfg/sda/ModuleMain.java
+          ! grep -Fq 'return new Validator(etag, modified);' \
             app/src/main/java/io/github/zhanfg/sda/ModuleMain.java
 
       - name: Commit focused runtime patch
