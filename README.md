@@ -24,9 +24,10 @@ Alpha 15 不允许仅凭 HTTP 206 或 Content-Length 猜测当前续传位置。
 6. 基础 `206 Content-Range` 必须一直覆盖到资源末尾，禁止把系统请求的中间窗口扩展成 `offset..EOF`。
 7. 原请求带 Range、服务器却降级 HTTP 200 时强制回退，禁止把续传误当成从 0 开始的新任务。
 8. 使用 `lseek(SEEK_CUR)` 读取系统目标 FD 当前偏移；偏移不可读或与 HTTP 续传起点不一致时强制回退。
-9. 资源仍必须具有强 ETag 或可验证 Last-Modified，并通过严格单字节 206 探测。
+9. 资源必须具有强 ETag；若只能使用 Last-Modified，则只有响应 `Date` 至少晚 60 秒、可保守视为强验证器时才允许作为 `If-Range`，否则回退系统下载。
+10. 通过以上条件后仍必须通过严格单字节 206 探测。
 
-这些规则由 `RangeProtocol` 纯 Java 层实现并由 JVM 单测覆盖，运行时代码直接复用相同的 HTTP 窗口、FD 对齐和分片几何逻辑。
+这些规则由 `RangeProtocol` 纯 Java 层实现并由 JVM 单测覆盖，运行时代码直接复用相同的 HTTP 窗口、FD 对齐、验证器强度和分片几何逻辑。
 
 ## Range 数据路径
 
@@ -62,13 +63,14 @@ CI 当前执行：
 - 源码 / Manifest / Xposed 作用域安全门；
 - `RangeProtocolTest` 纯协议 JVM 单测；
 - `RangeHttpContractTest` 本地真实 HTTP 合约测试；
+- Alpha 15 真机采样器 shell 语法与验收矩阵检查；
 - Debug 与 Release APK 全量重编；
 - Android Lint；
 - APK 签名和 Xposed 元数据验真；
 - Rust 1.86 ARM64 诊断器交叉编译；
 - Root 模块 ZIP 结构、内嵌 APK 字节一致性与 SHA-256。
 
-当前 JVM 测试共 **16 项**：`RangeProtocolTest` 14 项、`RangeHttpContractTest` 2 项，当前候选为 0 failure / 0 error。
+当前 JVM 测试共 **17 项**：`RangeProtocolTest` 15 项、`RangeHttpContractTest` 2 项，当前候选为 0 failure / 0 error。
 
 其中 HTTP 合约测试会启动真实的本地 HTTP Server，并使用真正的 `HttpURLConnection`：
 
@@ -85,6 +87,7 @@ CI 当前执行：
 - HTTP 206 起点与原请求不一致的拒绝；
 - 中间有界 Range 窗口拒绝、精确覆盖 EOF 的有界续传允许；
 - 本地目标 FD 偏移不一致或不可读时拒绝；
+- Last-Modified 未达到强验证器条件时拒绝用于 If-Range；
 - 多 Range / 畸形 Content-Range 拒绝；
 - worker 数量不超过分片数、线程硬上限和 spool 内存/磁盘预算；
 - 分片边界连续且最后一块正确收尾。
@@ -95,6 +98,17 @@ CI 不再让每个 GitHub Runner 随机生成不同的 Alpha 测试证书。PR �
 
 这只是**测试签名连续性**，不是正式发布签名。正式可持续升级的发布版仍必须使用固定、受保护的发布密钥，且私钥不得提交到仓库。
 
+## 真机证据工具
+
+仓库提供：
+
+```text
+tools/alpha15-device-validation.sh
+docs/ALPHA15-DEVICE-VALIDATION.md
+```
+
+采样器在 Root 下运行，每 2 秒记录引擎状态、私有 spool、网络连接，并在结束时收集相关 logcat / LSPosed 日志，可对目标文件执行 SHA-256 校验，最终输出 `SDA-Alpha15-Validation-*.tar.gz`。它不会删除下载文件或应用数据。
+
 ## 仍需真机验证
 
 CI 和 JVM HTTP 测试不能代替 Android 16 / ColorOS 真机。PR 合并前仍需检查：
@@ -103,7 +117,7 @@ CI 和 JVM HTTP 测试不能代替 Android 16 / ColorOS 真机。PR 合并前仍
 - 新下载和已有部分文件续传都能正确进入/退出 Range 模式；
 - Range → 200 降级时确实只走系统路径且文件不损坏；
 - 支持 Range 的真实大文件存在多个并行连接，并且最终 SHA-256 与单线程参考文件一致；
-- 不支持 Range、未知长度、压缩响应、DRM、缺少稳定验证器时正确回退；
+- 不支持 Range、未知长度、压缩响应、DRM、缺少强验证器时正确回退；
 - VPN / 代理 / 蜂窝网络下 worker 是否继承正确的 ColorOS `Network` 路由；
 - 断网、暂停、取消、下载服务被杀、服务重启和设备重启后的续传；
 - 超长下载期间活跃 spool 不会被陈旧目录清理误删，完成/失败/取消后能正确清理；
