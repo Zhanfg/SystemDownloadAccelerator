@@ -1,6 +1,8 @@
 #!/system/bin/sh
 
-ui_print "- System Download Accelerator Alpha 13"
+ui_print "- System Download Accelerator Alpha 14"
+ui_print "- Bounded parallel HTTP Range engine enabled"
+ui_print "- Original ColorOS copy loop remains the only destination writer"
 ui_print "- Includes the LSPosed API 102 APK"
 ui_print "- Existing app data is preserved during upgrades"
 ui_print "- Action runs one read-only Rust diagnostic"
