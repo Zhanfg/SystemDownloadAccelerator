@@ -839,7 +839,11 @@ public final class ModuleMain extends XposedModule {
                     last = error;
                     //noinspection ResultOfMethodCallIgnored
                     file.delete();
-                    if (error instanceof CancellationException || closed.get()) throw error;
+                    if (error instanceof CancellationException || closed.get()) {
+              if (error instanceof Exception) throw (Exception) error;
+              if (error instanceof Error) throw (Error) error;
+              throw new IOException("Range session cancelled", error);
+          }
                 } finally {
                     closeQuietly(output);
                     closeQuietly(input);
