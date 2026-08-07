@@ -25,28 +25,41 @@ final class RangeProtocol {
             return BaseWindow.reject("original Range request state unavailable");
         }
 
-        String requestRange = trim(requestRangeHeader);
+        String requestRangeHeaderValue = trim(requestRangeHeader);
         if (responseCode == 206) {
-            if (requestRange == null) {
+            if (requestRangeHeaderValue == null) {
                 return BaseWindow.reject("HTTP 206 without an original Range request");
             }
-            Long requestedStart = parseSingleRangeStart(requestRange);
-            if (requestedStart == null) {
-                return BaseWindow.reject("unsupported original Range request: " + requestRange);
+            RequestRange requestRange = parseSingleRange(requestRangeHeaderValue);
+            if (requestRange == null) {
+                return BaseWindow.reject("unsupported original Range request: "
+                        + requestRangeHeaderValue);
             }
+            if (!requestRange.openEnded) {
+                return BaseWindow.reject("bounded original Range request is not safe to expand");
+            }
+
             ContentRange responseRange = parseContentRange(contentRangeHeader);
             if (responseRange == null) {
                 return BaseWindow.reject("invalid base Content-Range");
             }
-            if (responseRange.start != requestedStart) {
+            if (responseRange.start != requestRange.start) {
                 return BaseWindow.reject("resume offset mismatch: requested "
-                        + requestedStart + ", response " + responseRange.start);
+                        + requestRange.start + ", response " + responseRange.start);
+            }
+            if (responseRange.end != responseRange.total - 1L) {
+                return BaseWindow.reject("base Content-Range does not reach resource end");
+            }
+            long expectedLength = responseRange.length();
+            if (contentLength > 0L && contentLength != expectedLength) {
+                return BaseWindow.reject("base response length mismatch: "
+                        + contentLength + "/" + expectedLength);
             }
             return BaseWindow.accept(responseRange.start, responseRange.total);
         }
 
         if (responseCode == 200) {
-            if (requestRange != null) {
+            if (requestRangeHeaderValue != null) {
                 return BaseWindow.reject("resume Range request downgraded to HTTP 200");
             }
             if (contentLength <= 0L) {
@@ -58,7 +71,21 @@ final class RangeProtocol {
         return BaseWindow.reject("HTTP " + responseCode);
     }
 
+    static String validateDestinationOffset(long expected, Long actual) {
+        if (expected < 0L) return "invalid expected destination offset";
+        if (actual == null || actual < 0L) return "destination offset unavailable";
+        if (actual != expected) {
+            return "destination offset mismatch: expected " + expected + ", actual " + actual;
+        }
+        return null;
+    }
+
     static Long parseSingleRangeStart(String header) {
+        RequestRange range = parseSingleRange(header);
+        return range == null ? null : range.start;
+    }
+
+    static RequestRange parseSingleRange(String header) {
         String value = trim(header);
         if (value == null || value.indexOf(',') >= 0) return null;
         Matcher matcher = REQUEST_RANGE.matcher(value);
@@ -67,11 +94,12 @@ final class RangeProtocol {
             long start = Long.parseLong(matcher.group(1));
             String endText = matcher.group(2);
             if (start < 0L) return null;
-            if (endText != null && !endText.isEmpty()) {
-                long end = Long.parseLong(endText);
-                if (end < start) return null;
+            if (endText == null || endText.isEmpty()) {
+                return new RequestRange(start, null, true);
             }
-            return start;
+            long end = Long.parseLong(endText);
+            if (end < start) return null;
+            return new RequestRange(start, end, false);
         } catch (NumberFormatException ignored) {
             return null;
         }
@@ -102,7 +130,12 @@ final class RangeProtocol {
         else automatic = 8;
 
         int requested = Math.max(initialThreads, automatic);
-        long chunks = Math.max(1L, (remaining + chunkSize - 1L) / chunkSize);
+        long chunks;
+        try {
+            chunks = Math.max(1L, Math.addExact(remaining, chunkSize - 1L) / chunkSize);
+        } catch (ArithmeticException overflow) {
+            chunks = Long.MAX_VALUE;
+        }
         return (int) Math.max(1L, Math.min(Math.min(maxThreads, requested), chunks));
     }
 
@@ -171,6 +204,18 @@ final class RangeProtocol {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    static final class RequestRange {
+        final long start;
+        final Long end;
+        final boolean openEnded;
+
+        RequestRange(long start, Long end, boolean openEnded) {
+            this.start = start;
+            this.end = end;
+            this.openEnded = openEnded;
+        }
+    }
+
     static final class BaseWindow {
         final boolean accepted;
         final String reason;
@@ -203,6 +248,10 @@ final class RangeProtocol {
             this.start = start;
             this.end = end;
             this.total = total;
+        }
+
+        long length() {
+            return end - start + 1L;
         }
     }
 
