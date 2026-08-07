@@ -17,6 +17,7 @@
     </queries>
 
     <application
+        android:name=".SafetyMigrationApplication"
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"

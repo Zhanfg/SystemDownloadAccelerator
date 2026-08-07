@@ -3,6 +3,8 @@
 -keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {
     public <init>();
 }
+-keep class io.github.zhanfg.sda.ModuleMain { public *; }
+-keep class io.github.zhanfg.sda.SafetyMigrationApplication { public *; }
 -keep class io.github.zhanfg.sda.MainActivity { *; }
 -keep class io.github.zhanfg.sda.DownloadConfirmActivity { *; }
 -keep class io.github.zhanfg.sda.ModernMainActivity { public *; }

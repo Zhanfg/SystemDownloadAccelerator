@@ -15,7 +15,9 @@ for file in \
   app/build.gradle.kts \
   app/src/main/AndroidManifest.xml \
   app/src/main/java/io/github/zhanfg/sda/ModuleMain.java \
+  app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java \
   app/src/main/java/io/github/zhanfg/sda/RootAccess.java \
+  app/src/main/resources/META-INF/xposed/java_init.list \
   app/src/main/resources/META-INF/xposed/module.prop \
   app/src/main/resources/META-INF/xposed/scope.list \
   alpha-module/module.prop; do
@@ -56,6 +58,8 @@ if 'android.permission.REQUEST_INSTALL_PACKAGES' in permissions:
 application = root.find('application')
 if application is None:
     raise SystemExit('application element missing')
+if application.attrib.get(ns + 'name') != '.SafetyMigrationApplication':
+    raise SystemExit('fail-closed settings migration application is missing')
 if application.attrib.get(ns + 'allowBackup') != 'false':
     raise SystemExit('download history must not be included in Android backup')
 
@@ -81,6 +85,19 @@ scope = [line.strip() for line in Path(
 ).read_text(encoding='utf-8').splitlines() if line.strip()]
 if scope != ['com.android.providers.downloads']:
     raise SystemExit(f'unsafe LSPosed scope: {scope}')
+
+entries = [line.strip() for line in Path(
+    'app/src/main/resources/META-INF/xposed/java_init.list'
+).read_text(encoding='utf-8').splitlines() if line.strip()]
+expected_entries = [
+    'io.github.zhanfg.sda.ModuleMain',
+    'io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule',
+    'io.github.zhanfg.sda.xposed.HistoryMirrorModule',
+]
+if entries != expected_entries:
+    raise SystemExit(f'unsafe or unexpected libxposed entry list: {entries}')
+if any('RealDownloadAcceleratorModule' in item for item in entries):
+    raise SystemExit('unvalidated Range engine must not be loaded')
 PY
 
 grep -Fq 'versionName = "0.3.0-alpha13"' app/build.gradle.kts \
@@ -93,6 +110,9 @@ grep -Fq 'targetApiVersion=102' app/src/main/resources/META-INF/xposed/module.pr
   || fail "libxposed target API mismatch"
 grep -Fq 'return chain.proceed();' app/src/main/java/io/github/zhanfg/sda/ModuleMain.java \
   || fail "system transfer return value is not preserved"
+grep -Fq '.putBoolean("enabled", false)' \
+  app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java \
+  || fail "legacy Range setting is not reset fail-closed"
 grep -Fq 'new ProcessBuilder("su", "-c", "id -u")' \
   app/src/main/java/io/github/zhanfg/sda/RootAccess.java \
   || fail "root probe is no longer the fixed id -u command"

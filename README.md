@@ -7,13 +7,15 @@
 - Android 管理界面、首次运行设置和 Root 授权探测。
 - 下载确认界面、默认目录选择、持久 URI 授权和下载历史。
 - Android 16 Live Update 下载通知、暂停/继续/取消/重试控制桥。
-- ColorOS DownloadProvider 目标方法识别与安全 Hook。
+- ColorOS DownloadProvider 目标方法识别与安全透传 Hook。
 - LSPosed 作用域固定为 `com.android.providers.downloads`。
 - 可选 Root 包装模块，内含 APK 和只读 Rust 一次性诊断器。
 
 ## 重要边界
 
-当前 Hook 仍处于**安全透传模式**：识别到 ColorOS 的 `u(HttpURLConnection)` 后，完整执行系统原始传输并原样返回结果。真正替换系统传输的分段下载协调器尚未启用，因此本版本不能宣称已经提供稳定的多线程加速。
+Alpha 13 的实际 libxposed 入口固定为安全透传 `ModuleMain`：识别到 ColorOS 的 `u(HttpURLConnection)` 后，完整执行系统原始传输并原样返回结果。
+
+仓库仍保留实验性 `RealDownloadAcceleratorModule` 源码供后续审查，但它**不在 `java_init.list` 中，不会被加载**。升级到 Alpha 13 时，应用还会把旧版本遗留的 `enabled=true` 设置重置为关闭。界面中的多线程配置暂时属于预留项；在真实 Range 引擎通过设备级完整性测试前，本版本不能宣称提供稳定的多线程加速。
 
 以下内容仍需 Android 16 / ColorOS 真机验证：
 
@@ -69,6 +71,7 @@ Root 包装模块：从 Magisk、KernelSU 或 APatch 管理器安装模块 ZIP�
 - 三个导出的 Provider 都在代码中验证调用 UID。
 - 确认令牌使用受限格式和一次性状态。
 - 下载历史、源 URL 与本地路径不参与 Android 备份。
+- 未验证的 Range 引擎不进入实际加载清单。
 - Rust 诊断器仅由模块 Action 手动运行，不驻留后台。
 
 ## 源码恢复
