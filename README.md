@@ -1,29 +1,56 @@
 # System Download Accelerator
 
-面向 Android 系统 `DownloadProvider` 的 LSPosed API 102 模块。当前恢复版本为 **0.3.0-alpha13**，源码已经从历史编码构建载荷还原为普通、可审查的 Gradle 工程。
+面向 Android 系统 `DownloadProvider` 的 LSPosed API 102 模块。当前候选版本为 **0.3.0-alpha14**，源码已经从历史编码构建载荷还原为普通、可审查的 Gradle 工程。
 
 ## 当前实现
 
 - Android 管理界面、首次运行设置和 Root 授权探测。
 - 下载确认界面、默认目录选择、持久 URI 授权和下载历史。
 - Android 16 Live Update 下载通知、暂停/继续/取消/重试控制桥。
-- ColorOS DownloadProvider 目标方法识别与安全透传 Hook。
+- ColorOS DownloadProvider 目标方法识别与真正的并行 HTTP Range 下载。
+- 运行状态回传到管理界面：`active`、`fallback`、`complete`、`error`、`disabled`。
 - LSPosed 作用域固定为 `com.android.providers.downloads`。
 - 可选 Root 包装模块，内含 APK 和只读 Rust 一次性诊断器。
 
-## 重要边界
+## Alpha 14 Range 架构
 
-Alpha 13 的实际 libxposed 入口固定为安全透传 `ModuleMain`：识别到 ColorOS 的 `u(HttpURLConnection)` 后，完整执行系统原始传输并原样返回结果。
+Alpha 13 只有安全透传，不具备实际加速能力；Alpha 14 已替换该实现。
 
-历史 Alpha 中的实验性并发 Range 写入引擎已从编译源码树隔离，只保留在 Git 历史和恢复分支中，不会进入 APK。升级到 Alpha 13 时，应用还会把旧版本遗留的 `enabled=true` 设置重置为关闭。界面中的多线程配置暂时属于预留项；在新实现通过设备级完整性测试前，本版本不能宣称提供稳定的多线程加速。
+当前引擎不会让多个 worker 直接写入 DownloadProvider 的目标文件。流程为：
 
-以下内容仍需 Android 16 / ColorOS 真机验证：
+1. ColorOS 建立原始 `HttpURLConnection`，模块读取其 URL、进度、网络绑定和请求配置。
+2. 在任何加速数据进入系统写盘路径前执行严格预检。
+3. 服务器必须提供已知文件总长度，并具有稳定的强 ETag 或可验证的 Last-Modified。
+4. 发送单字节 Range 探测，必须得到精确 `206 Partial Content`、精确 `Content-Range`、相同总长度和相同资源验证器。
+5. 通过预检后，由 2–16 个并行 worker 下载互不重叠的 Range 分片到**有界临时分片窗口**。
+6. 分片按字节顺序组合为一个 `InputStream`，再传回 ColorOS 原始 copy loop。
+7. 目标文件始终只有系统原始 copy loop 一个写入者；系统继续负责进度、目标文件语义、fsync、错误传播和续传。
+8. 预检失败时，在暴露任何加速字节前直接使用系统原始传输。
+9. 加速运行中发生网络/Range 异常时，不在同一调用内抢写回退，而是将异常交回 DownloadProvider 自己的重试/续传机制。
 
-- 不同系统补丁版本下的混淆类名和方法签名；
-- 下载确认、系统进程重启和异常恢复；
-- Live Update 通知权限及控制按钮；
-- LSPosed 热加载和作用域行为；
-- Root 包装模块升级 APK 的行为。
+这与历史 Alpha 12 的并行 `pwrite` 方案不同。旧方案已经从编译源码树移除，不会进入 APK。
+
+## 调度与资源限制
+
+- 最高线程数：2–16，默认 8。
+- 初始线程数：2–最高线程数，默认 4。
+- 加速阈值：8–4096 MiB，默认 32 MiB。
+- 分片大小：4–64 MiB，默认 16 MiB。
+- 临时分片只预取有限窗口，不会按整个文件大小一次性占用临时空间。
+- 启动 Range 会话前检查临时空间，并额外保留 64 MiB 余量。
+- 旧版本遗留的 1024 线程配置会在迁移时被限制到新范围。
+
+## 仍需真机验证的边界
+
+CI 能证明源码、APK、Lint、Xposed 元数据和打包链正确，但无法代替 Android 16 / ColorOS 真机验证。合并前仍需检查：
+
+- 当前 ColorOS 补丁版本的混淆类名和方法签名是否仍匹配；
+- 支持 Range 的真实大文件是否出现多个并行连接并保持最终 SHA-256 一致；
+- 不支持 Range、未知长度、压缩响应、DRM 输出和缺少稳定验证器时是否正确回退；
+- 断网、暂停、取消、下载服务重启和设备重启后的续传行为；
+- 临时分片是否按窗口受控并在完成、失败和取消后清理；
+- Live Update 通知及控制按钮；
+- Root 包装模块覆盖升级行为。
 
 ## 构建环境
 
@@ -51,9 +78,9 @@ bash ci/build-module.sh
 输出位于 `dist/`：
 
 ```text
-SystemDownloadAccelerator-0.3.0-alpha13-debug.apk
-SystemDownloadAccelerator-0.3.0-alpha13.apk
-SystemDownloadAccelerator-0.3.0-alpha13-module.zip
+SystemDownloadAccelerator-0.3.0-alpha14-debug.apk
+SystemDownloadAccelerator-0.3.0-alpha14.apk
+SystemDownloadAccelerator-0.3.0-alpha14-module.zip
 APK-CERTIFICATES.txt
 SHA256SUMS.txt
 ```
@@ -73,7 +100,8 @@ Root 包装模块：从 Magisk、KernelSU 或 APatch 管理器安装模块 ZIP�
 - 下载确认与通知控制广播同时使用签名级权限和随机令牌。
 - 确认令牌使用受限格式和一次性状态。
 - 下载历史、源 URL 与本地路径不参与 Android 备份。
-- 未验证的 Range 引擎不进入编译源码树或实际加载清单。
+- 历史直接写目标 FD 的 Range 引擎被隔离在 Git 历史中，不进入当前编译树。
+- Range 完整性校验和安全回退策略为强制行为，UI 不允许关闭。
 - Rust 诊断器仅由模块 Action 手动运行，不驻留后台。
 
 ## 源码恢复
