@@ -122,6 +122,17 @@ public final class RangeProtocolTest {
     }
 
     @Test
+    public void lastModifiedMustBeStrongEnoughForIfRange() {
+        long modified = 1_700_000_000_000L;
+        assertFalse(RangeProtocol.isStrongLastModified(modified, modified));
+        assertFalse(RangeProtocol.isStrongLastModified(modified, modified + 59_999L));
+        assertTrue(RangeProtocol.isStrongLastModified(modified, modified + 60_000L));
+        assertFalse(RangeProtocol.isStrongLastModified(modified, modified - 1L));
+        assertFalse(RangeProtocol.isStrongLastModified(-1L, modified + 60_000L));
+        assertFalse(RangeProtocol.isStrongLastModified(modified, -1L));
+    }
+
+    @Test
     public void contentRangeParserRequiresExactValidGeometry() {
         RangeProtocol.ContentRange range = RangeProtocol.parseContentRange("bytes 10-19/100");
         assertNotNull(range);
