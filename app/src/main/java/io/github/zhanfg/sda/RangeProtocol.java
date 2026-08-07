@@ -106,6 +106,44 @@ final class RangeProtocol {
         return (int) Math.max(1L, Math.min(Math.min(maxThreads, requested), chunks));
     }
 
+    static SpoolPlan planSpool(int chunkCount,
+                               int plannedWorkers,
+                               long chunkSize,
+                               long maxWindowBytes) {
+        if (chunkCount <= 0 || plannedWorkers <= 0 || chunkSize <= 0L || maxWindowBytes <= 0L) {
+            return SpoolPlan.reject("invalid spool geometry");
+        }
+
+        long budgetSlotsLong = maxWindowBytes / chunkSize;
+        if (budgetSlotsLong < 2L) {
+            return SpoolPlan.reject("spool budget cannot hold two chunks");
+        }
+        int budgetSlots = (int) Math.min(Integer.MAX_VALUE, budgetSlotsLong);
+        int workers = Math.min(Math.min(plannedWorkers, chunkCount), budgetSlots);
+        if (workers < 2) {
+            return SpoolPlan.reject("spool budget reduced worker count below two");
+        }
+
+        long targetWindow = Math.max((long) workers + 1L, (long) workers * 2L);
+        int window = (int) Math.min(
+                Math.min((long) chunkCount, targetWindow),
+                (long) budgetSlots);
+        if (window < workers) {
+            return SpoolPlan.reject("spool window smaller than worker count");
+        }
+
+        long windowBytes;
+        try {
+            windowBytes = Math.multiplyExact((long) window, chunkSize);
+        } catch (ArithmeticException overflow) {
+            return SpoolPlan.reject("spool byte budget overflow");
+        }
+        if (windowBytes > maxWindowBytes) {
+            return SpoolPlan.reject("spool window exceeds hard byte budget");
+        }
+        return SpoolPlan.accept(workers, window, windowBytes);
+    }
+
     static ChunkBounds chunkBounds(long current, long total, long chunkSize, int index) {
         if (current < 0L || total <= current || chunkSize <= 0L || index < 0) {
             throw new IllegalArgumentException("invalid chunk geometry");
@@ -165,6 +203,31 @@ final class RangeProtocol {
             this.start = start;
             this.end = end;
             this.total = total;
+        }
+    }
+
+    static final class SpoolPlan {
+        final boolean accepted;
+        final String reason;
+        final int workers;
+        final int windowChunks;
+        final long windowBytes;
+
+        private SpoolPlan(boolean accepted, String reason,
+                          int workers, int windowChunks, long windowBytes) {
+            this.accepted = accepted;
+            this.reason = reason;
+            this.workers = workers;
+            this.windowChunks = windowChunks;
+            this.windowBytes = windowBytes;
+        }
+
+        static SpoolPlan accept(int workers, int windowChunks, long windowBytes) {
+            return new SpoolPlan(true, null, workers, windowChunks, windowBytes);
+        }
+
+        static SpoolPlan reject(String reason) {
+            return new SpoolPlan(false, reason, 0, 0, 0L);
         }
     }
 
