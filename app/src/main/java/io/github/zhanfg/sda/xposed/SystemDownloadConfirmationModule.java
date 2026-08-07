@@ -78,7 +78,7 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
                         Uri downloadUri = (Uri) result;
                         ContentProvider provider = (ContentProvider) chain.getThisObject();
                         Context context = provider.getContext();
-                        if (context == null || shouldBypass(snapshot)) return result;
+                        if (context == null || shouldBypass(snapshot) || !confirmationEnabled()) return result;
 
                         ensureDecisionReceiver(context);
 
@@ -115,6 +115,15 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
     private boolean shouldBypass(ContentValues values) {
         String source = values.getAsString("uri");
         return source == null || source.isEmpty();
+    }
+
+    private boolean confirmationEnabled() {
+        try {
+            return getRemotePreferences("module_settings")
+                    .getBoolean("confirmation_enabled", true);
+        } catch (Throwable ignored) {
+            return true;
+        }
     }
 
     private boolean launchThroughRootBridge(

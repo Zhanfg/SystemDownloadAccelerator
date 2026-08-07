@@ -1,0 +1,25 @@
+-dontwarn io.github.libxposed.annotation.**
+-adaptresourcefilecontents META-INF/xposed/java_init.list
+-keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {
+    public <init>();
+}
+-keep class io.github.zhanfg.sda.MainActivity { *; }
+-keep class io.github.zhanfg.sda.DownloadConfirmActivity { *; }
+-keep class io.github.zhanfg.sda.ModernMainActivity { public *; }
+-keep class io.github.zhanfg.sda.SystemDownloadConfirmActivity { public *; }
+-keep class io.github.zhanfg.sda.HistoryProvider { public *; }
+-keep class io.github.zhanfg.sda.RootUiBridgeProvider { public *; }
+-keep class io.github.zhanfg.sda.ui.** { *; }
+-keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule { public *; }
+-keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule$* { *; }
+-keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule { public *; }
+-keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule$* { *; }
+-keep class io.github.zhanfg.sda.xposed.HistoryMirrorModule { public *; }
+-keep class io.github.zhanfg.sda.xposed.HistoryMirrorModule$* { *; }
+-keep class io.github.zhanfg.sda.DownloadLiveUpdateProvider { public *; }
+-keep class io.github.zhanfg.sda.ui.AdaptiveWindowInfo { *; }
+-keep class io.github.zhanfg.sda.ui.AdaptiveWindowInfo$* { *; }
+-keep class io.github.zhanfg.sda.LiveUpdateDismissReceiver { public *; }
+-keep class io.github.zhanfg.sda.FirstRunSetupActivity { public *; }
+-keep class io.github.zhanfg.sda.RootAccess { public *; }
+-keep class io.github.zhanfg.sda.RootAccess$* { *; }

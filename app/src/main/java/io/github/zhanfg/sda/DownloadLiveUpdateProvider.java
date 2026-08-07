@@ -25,6 +25,7 @@ import android.os.SystemClock;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
+import java.security.SecureRandom;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,6 +45,8 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
     private static final long MIN_NOTIFY_INTERVAL_MS = 500L;
     private static final long SPEED_TEXT_INTERVAL_MS = 1_000L;
     private static final long SUCCESS_VISIBLE_MS = 6_000L;
+    private static final String CONTROL_PREFS = "live_update_control_tokens";
+    private static final SecureRandom CONTROL_RANDOM = new SecureRandom();
 
     private static final Map<Long, Sample> SAMPLES = new ConcurrentHashMap<>();
     private static final Map<Long, Runnable> DISMISS_RUNNABLES = new ConcurrentHashMap<>();
@@ -70,6 +73,16 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
             long id = extras == null ? -1L : extras.getLong("download_id", -1L);
             if (id >= 0) cancelNotification(providerContext(), id);
             return Bundle.EMPTY;
+        }
+        if ("verify_control".equals(method)) {
+            long id = extras == null ? -1L : extras.getLong("download_id", -1L);
+            String supplied = extras == null ? null : extras.getString("control_token");
+            String expected = id < 0 ? null : providerContext()
+                    .getSharedPreferences(CONTROL_PREFS, Context.MODE_PRIVATE)
+                    .getString(Long.toString(id), null);
+            Bundle result = new Bundle();
+            result.putBoolean("valid", constantTimeEquals(expected, supplied));
+            return result;
         }
         return super.call(method, arg, extras);
     }
@@ -170,6 +183,7 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
             NotificationManagerCompat.from(context.getApplicationContext()).cancel(notificationId);
             SAMPLES.remove(id);
             DISMISS_RUNNABLES.remove(id);
+            removeControlToken(context, id);
         };
         DISMISS_RUNNABLES.put(id, runnable);
         MAIN.postDelayed(runnable, SUCCESS_VISIBLE_MS);
@@ -196,6 +210,36 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
         cancelScheduledDismiss(context, id);
         NotificationManagerCompat.from(context).cancel(notificationId(id));
         SAMPLES.remove(id);
+        removeControlToken(context, id);
+    }
+
+    private static String controlToken(Context context, long id) {
+        android.content.SharedPreferences preferences = context.getSharedPreferences(
+                CONTROL_PREFS, Context.MODE_PRIVATE);
+        String key = Long.toString(id);
+        String token = preferences.getString(key, null);
+        if (token != null && token.length() >= 32) return token;
+        byte[] bytes = new byte[24];
+        CONTROL_RANDOM.nextBytes(bytes);
+        StringBuilder value = new StringBuilder(bytes.length * 2);
+        for (byte item : bytes) value.append(String.format(Locale.ROOT, "%02x", item & 0xff));
+        token = value.toString();
+        preferences.edit().putString(key, token).commit();
+        return token;
+    }
+
+    private static void removeControlToken(Context context, long id) {
+        context.getSharedPreferences(CONTROL_PREFS, Context.MODE_PRIVATE)
+                .edit().remove(Long.toString(id)).apply();
+    }
+
+    private static boolean constantTimeEquals(String expected, String supplied) {
+        if (expected == null || supplied == null || expected.length() != supplied.length()) return false;
+        int difference = 0;
+        for (int index = 0; index < expected.length(); index++) {
+            difference |= expected.charAt(index) ^ supplied.charAt(index);
+        }
+        return difference == 0;
     }
 
     private static PendingIntent dismissPendingIntent(Context context, long id) {
@@ -260,7 +304,8 @@ public final class DownloadLiveUpdateProvider extends ContentProvider {
         Intent intent = new Intent(ACTION_CONTROL)
                 .setPackage(DOWNLOADS_PACKAGE)
                 .putExtra("download_id", id)
-                .putExtra("command", command);
+                .putExtra("command", command)
+                .putExtra("control_token", controlToken(context, id));
         return PendingIntent.getBroadcast(
                 context,
                 (int) (id ^ command.hashCode()),

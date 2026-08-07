@@ -1,0 +1,3 @@
+io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule
+io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule
+io.github.zhanfg.sda.xposed.HistoryMirrorModule

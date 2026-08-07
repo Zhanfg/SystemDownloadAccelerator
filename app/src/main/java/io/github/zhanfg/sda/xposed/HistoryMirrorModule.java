@@ -113,6 +113,22 @@ public final class HistoryMirrorModule extends XposedModule {
                 long id = intent.getLongExtra("download_id", -1L);
                 String command = intent.getStringExtra("command");
                 if (id < 0 || command == null) return;
+                String controlToken = intent.getStringExtra("control_token");
+                Bundle verification = new Bundle();
+                verification.putLong("download_id", id);
+                verification.putString("control_token", controlToken);
+                Bundle verified;
+                try {
+                    verified = context.getContentResolver().call(
+                            LIVE_UPDATE_URI, "verify_control", null, verification);
+                } catch (Throwable error) {
+                    log(Log.WARN, TAG, "Unable to verify notification control", error);
+                    return;
+                }
+                if (verified == null || !verified.getBoolean("valid", false)) {
+                    log(Log.WARN, TAG, "Rejected unauthenticated download control for id=" + id);
+                    return;
+                }
                 Uri uri = ContentUris.withAppendedId(
                         Uri.parse("content://downloads/all_downloads"), id);
                 try {

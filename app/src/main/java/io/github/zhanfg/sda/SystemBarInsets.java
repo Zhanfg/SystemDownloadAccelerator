@@ -5,7 +5,6 @@ import android.os.Build;
 import android.view.View;
 import android.view.WindowInsets;
 
-/** Applies status-bar, display-cutout and navigation-bar insets without fixed pixels. */
 final class SystemBarInsets {
     private SystemBarInsets() {}
 
@@ -14,12 +13,10 @@ final class SystemBarInsets {
             root.setFitsSystemWindows(true);
             return;
         }
-
         final int baseLeft = root.getPaddingLeft();
         final int baseTop = root.getPaddingTop();
         final int baseRight = root.getPaddingRight();
         final int baseBottom = root.getPaddingBottom();
-
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             int left;
             int top;

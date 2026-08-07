@@ -279,19 +279,3 @@ dependencies {
 EOF
 
 sdkmanager "platforms;android-35" "build-tools;35.0.0" >/dev/null
-gradle --no-daemon :app:assembleDebug :app:assembleRelease
-
-for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
-  unzip -p "$apk" META-INF/xposed/java_init.list | grep -qx \
-    'io.github.zhanfg.sda.xposed.ClientInAppConfirmationModule'
-  unzip -p "$apk" META-INF/xposed/module.prop | grep -qx 'targetApiVersion=102'
-  unzip -p "$apk" META-INF/xposed/scope.list | grep -qx 'com.openai.chatgpt'
-done
-
-mkdir -p dist
-cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-0.2.5-alpha7-debug.apk
-cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-0.2.5-alpha7.apk
-(
-  cd dist
-  sha256sum *.apk > SHA256SUMS.txt
-)

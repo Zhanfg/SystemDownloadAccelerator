@@ -88,7 +88,11 @@ public final class ModernMainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         preferences = getSharedPreferences("module_settings", MODE_PRIVATE);
-        configureWindow();
+        if (savedInstanceState == null
+                && !preferences.getBoolean("first_run_setup_shown", false)) {
+            startActivity(new Intent(this, FirstRunSetupActivity.class));
+        }
+configureWindow();
         resolveColors();
 
         View root = buildRoot();
@@ -386,22 +390,39 @@ public final class ModernMainActivity extends Activity {
 
         List<HistoryItem> history = loadHistory();
         if (history.isEmpty()) {
+            FrameLayout emptyHost = new FrameLayout(this);
+            LinearLayout.LayoutParams hostParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+            hostParams.topMargin = dp(12);
+            content.addView(emptyHost, hostParams);
+
             LinearLayout empty = card(surface, 24);
             empty.setGravity(Gravity.CENTER);
+            empty.setPadding(dp(24), dp(30), dp(24), dp(30));
+
             ImageView icon = new ImageView(this);
             icon.setImageResource(android.R.drawable.ic_menu_recent_history);
             icon.setColorFilter(textSecondary);
             empty.addView(icon, new LinearLayout.LayoutParams(dp(42), dp(42)));
+
             TextView title = text("暂无下载记录", 18, textPrimary, true);
             title.setGravity(Gravity.CENTER);
             title.setPadding(0, dp(14), 0, dp(6));
             empty.addView(title);
-            TextView body = text("这里仅显示系统下载服务真实同步的数据，不再放置演示记录。",
+
+            TextView body = text("这里仅显示系统下载服务真实同步的数据。",
                     14, textSecondary, false);
             body.setGravity(Gravity.CENTER);
+            body.setMaxWidth(dp(420));
             empty.addView(body);
-            content.addView(empty);
-            return scroll(content);
+
+            int available = Math.max(dp(280),
+                    getResources().getDisplayMetrics().widthPixels - dp(32));
+            int cardWidth = Math.min(available, dp(640));
+            FrameLayout.LayoutParams emptyParams = new FrameLayout.LayoutParams(
+                    cardWidth, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+            emptyHost.addView(empty, emptyParams);
+            return content;
         }
 
         for (HistoryItem item : history) {
@@ -415,20 +436,53 @@ public final class ModernMainActivity extends Activity {
 
         content.addView(sectionLabel("外观"));
         LinearLayout appearance = card(surface, 22);
-        appearance.addView(infoRow("界面风格", "Material 3 Expressive 结构"));
+        appearance.addView(uiStyleSelector());
+        appearance.addView(divider());
+        appearance.addView(switchRow("窗口模糊",
+                "Android 12+ 对透明宿主后的原应用窗口进行模糊",
+                "use_blur", Build.VERSION.SDK_INT >= 31));
         appearance.addView(divider());
         appearance.addView(infoRow("配色", Build.VERSION.SDK_INT >= 31
                 ? "跟随系统动态色" : "青蓝固定主题"));
         content.addView(appearance);
 
+        content.addView(sectionLabel("弹窗架构"));
+        LinearLayout architecture = card(surface, 22);
+        architecture.addView(infoRow("外层宿主", "Root 启动的透明 Activity"));
+        architecture.addView(divider());
+        architecture.addView(infoRow("Material 渲染器", "居中 PositionDialog 风格"));
+        architecture.addView(divider());
+        architecture.addView(infoRow("Miuix 渲染器", "底部 WindowBottomSheet 风格"));
+        architecture.addView(divider());
+        architecture.addView(infoRow("共享状态", "同一任务、同一确认结果"));
+        content.addView(architecture);
+
         content.addView(sectionLabel("诊断"));
         LinearLayout diagnostics = card(surface, 22);
-        diagnostics.addView(infoRow("模块入口", "Real engine + system confirmation"));
+        diagnostics.addView(infoRow("模块入口", "API 102 · DownloadProvider"));
         diagnostics.addView(divider());
-        diagnostics.addView(infoRow("历史同步", "DownloadProvider → HistoryProvider"));
+        diagnostics.addView(infoRow("特权启动桥", "io.github.zhanfg.sda.rootbridge"));
+        diagnostics.addView(divider());
+        diagnostics.addView(infoRow("核心作用域", "com.android.providers.downloads"));
         diagnostics.addView(divider());
         diagnostics.addView(infoRow("日志标签", "SysDownloadAccel / SysDownloadConfirm"));
         content.addView(diagnostics);
+
+        content.addView(sectionLabel("权限与环境"));
+        LinearLayout permissions = card(surface, 22);
+        permissions.addView(infoRow("Root", "确认窗口的可靠启动权限"));
+        permissions.addView(divider());
+        permissions.addView(infoRow("通知", "实时活动、百分比和快速操作"));
+        permissions.addView(divider());
+        permissions.addView(infoRow("LSPosed 作用域", "com.android.providers.downloads"));
+        Button permissionCheck = button("检查 Root 与权限", false);
+        permissionCheck.setOnClickListener(v -> startActivity(
+                new Intent(this, FirstRunSetupActivity.class).putExtra("manual", true)));
+        LinearLayout.LayoutParams permissionParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        permissionParams.topMargin = dp(12);
+        permissions.addView(permissionCheck, permissionParams);
+        content.addView(permissions);
 
         Button clear = button("清除历史记录", false);
         clear.setTextColor(error);
@@ -440,6 +494,39 @@ public final class ModernMainActivity extends Activity {
         content.addView(clear, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
         return scroll(content);
+    }
+
+    private View uiStyleSelector() {
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(0, dp(4), 0, dp(8));
+
+        TextView title = text("界面风格", 16, textPrimary, true);
+        container.addView(title);
+        TextView description = text(
+                "两套独立渲染器，共享下载状态；切换后下一次弹窗生效。",
+                13, textSecondary, false);
+        description.setPadding(0, dp(4), 0, dp(12));
+        container.addView(description);
+
+        String selected = preferences.getString("ui_style", "material");
+        LinearLayout choices = new LinearLayout(this);
+        choices.setOrientation(LinearLayout.HORIZONTAL);
+        Button material = button("Material 3", "material".equals(selected));
+        Button miuix = button("Miuix", "miuix".equals(selected));
+        material.setOnClickListener(v -> {
+            preferences.edit().putString("ui_style", "material").apply();
+            showPage(PAGE_SETTINGS, false);
+        });
+        miuix.setOnClickListener(v -> {
+            preferences.edit().putString("ui_style", "miuix").apply();
+            showPage(PAGE_SETTINGS, false);
+        });
+        choices.addView(material, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        choices.addView(spaceHorizontal(10));
+        choices.addView(miuix, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        container.addView(choices);
+        return container;
     }
 
     private View historyCard(HistoryItem item) {

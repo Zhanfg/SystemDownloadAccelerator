@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:scheme="content" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT_TREE" />
+        </intent>
+    </queries>
+        <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+
+        <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SystemDownloadAccelerator">
+        <activity
+            android:name=".DownloadConfirmActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.SystemDownloadAccelerator.Dialog" />
+        <activity
+            android:name=".ModernMainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+            <activity
+            android:name=".SystemDownloadConfirmActivity"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density|uiMode"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:finishOnTaskLaunch="true"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:resizeableActivity="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.SDA.Translucent" />
+    
+        <provider
+            android:name=".HistoryProvider"
+            android:authorities="io.github.zhanfg.sda.history"
+            android:exported="true" />
+            <provider
+            android:name=".RootUiBridgeProvider"
+            android:authorities="io.github.zhanfg.sda.rootbridge"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+            <provider
+            android:name=".DownloadLiveUpdateProvider"
+            android:authorities="io.github.zhanfg.sda.liveupdate"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+            <receiver
+            android:name=".LiveUpdateDismissReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="io.github.zhanfg.sda.action.DISMISS_COMPLETED_LIVE_UPDATE" />
+            </intent-filter>
+        </receiver>
+            <activity
+            android:name=".FirstRunSetupActivity"
+            android:exported="false"
+            android:resizeableActivity="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
+</manifest>

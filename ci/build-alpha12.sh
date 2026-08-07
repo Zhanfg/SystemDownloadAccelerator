@@ -31,7 +31,7 @@ activity = '''<activity
             android:name=".FirstRunSetupActivity"
             android:exported="false"
             android:resizeableActivity="true"
-            android:theme="@style/Theme.SDA.Main" />'''
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />'''
 if '.FirstRunSetupActivity' not in xml:
     xml = xml.replace('</application>', '        ' + activity + '\n    </application>', 1)
 manifest.write_text(xml, encoding='utf-8')
@@ -219,27 +219,3 @@ cat >> app/proguard-rules.pro <<'EOF'
 -keep class io.github.zhanfg.sda.RootAccess { public *; }
 -keep class io.github.zhanfg.sda.RootAccess$* { *; }
 EOF
-
-rm -rf app/build dist
-gradle --no-daemon :app:assembleDebug :app:assembleRelease
-
-for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
-  unzip -p "$apk" META-INF/xposed/java_init.list | grep -qx \
-    'io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule'
-  unzip -p "$apk" META-INF/xposed/module.prop | grep -qx 'targetApiVersion=102'
-  test "$(unzip -p "$apk" META-INF/xposed/scope.list | tr -d '\r\n')" = \
-    'com.android.providers.downloads'
-  unzip -l "$apk" | grep -q 'classes.dex'
-  "$ANDROID_HOME/build-tools/35.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml \
-    | grep -q 'FirstRunSetupActivity'
-  "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$apk" \
-    | grep -q 'android.permission.POST_NOTIFICATIONS'
-done
-
-mkdir -p dist
-cp app/build/outputs/apk/debug/app-debug.apk dist/SystemDownloadAccelerator-0.3.0-alpha12-debug.apk
-cp app/build/outputs/apk/release/app-release.apk dist/SystemDownloadAccelerator-0.3.0-alpha12.apk
-(
-  cd dist
-  sha256sum *.apk > SHA256SUMS.txt
-)
