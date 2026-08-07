@@ -78,9 +78,10 @@ public final class RangeProtocolTest {
     @Test
     public void schedulerNeverExceedsChunksOrHardLimit() {
         long mib = 1024L * 1024L;
-        assertEquals(2, RangeProtocol.chooseThreads(64L * mib, 4, 16, 16L * mib));
+        assertEquals(4, RangeProtocol.chooseThreads(64L * mib, 4, 16, 16L * mib));
         assertEquals(4, RangeProtocol.chooseThreads(512L * mib, 4, 16, 16L * mib));
         assertEquals(2, RangeProtocol.chooseThreads(20L * mib, 8, 16, 10L * mib));
+        assertEquals(16, RangeProtocol.chooseThreads(16L * 1024L * mib, 16, 16, 64L * mib));
     }
 
     @Test
