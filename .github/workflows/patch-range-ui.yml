@@ -1,0 +1,51 @@
+name: One-shot Range UI alignment
+
+on:
+  push:
+    branches:
+      - fix/restore-direct-source-build
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/restore-direct-source-build
+          fetch-depth: 0
+      - name: Align UI with functional Range engine
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/io/github/zhanfg/sda/ModernMainActivity.java')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+          ('''        LinearLayout hero = card(primary, 26);\n        TextView state = text("模块已启用", 21, onPrimary, true);\n        TextView detail = text("系统下载服务统一拦截 · 异常自动回退", 14,\n                withAlpha(onPrimary, 210), false);''',
+           '''        LinearLayout hero = card(primary, 26);\n        String engineStatus = preferences.getString("engine_status", "idle");\n        String engineDetail = preferences.getString("engine_detail", "尚无 Range 运行记录");\n        int engineThreads = preferences.getInt("engine_threads", 0);\n        String engineLabel;\n        if ("active".equals(engineStatus)) engineLabel = "Range 加速运行中";\n        else if ("complete".equals(engineStatus)) engineLabel = "最近一次 Range 已完成";\n        else if ("fallback".equals(engineStatus)) engineLabel = "最近一次使用系统回退";\n        else if ("error".equals(engineStatus)) engineLabel = "Range 任务异常";\n        else if ("disabled".equals(engineStatus)) engineLabel = "Range 加速已关闭";\n        else engineLabel = "等待系统下载任务";\n        String runtimeDetail = engineDetail;\n        if (engineThreads > 0) runtimeDetail += " · " + engineThreads + " 线程";\n        TextView state = text(engineLabel, 21, onPrimary, true);\n        TextView detail = text(runtimeDetail, 14, withAlpha(onPrimary, 210), false);'''),
+          ('''        service.addView(infoRow("最高线程配置", String.valueOf(\n                preferences.getInt("max_threads", 1024))));''',
+           '''        service.addView(infoRow("最高线程配置", String.valueOf(\n                preferences.getInt("max_threads", 8))));\n        service.addView(divider());\n        service.addView(infoRow("最近引擎状态", preferences.getString(\n                "engine_status", "等待任务")));'''),
+          ('''        threads.addView(numberRow("最高线程数", "允许范围 1–1024",\n                "max_threads", 1024));\n        threads.addView(divider());\n        threads.addView(numberRow("初始线程数", "自动调度会继续调整",\n                "initial_threads", 4));\n        threads.addView(divider());\n        threads.addView(numberRow("启用阈值（MiB）", "小文件保持系统单线程",\n                "min_size_mb", 32));\n        threads.addView(divider());\n        threads.addView(switchRow("严格校验 Range",\n                "验证 206、Content-Range 与 ETag",\n                "strict_range", true));\n        threads.addView(divider());\n        threads.addView(switchRow("失败时自动回退",\n                "避免下载服务崩溃或文件损坏",\n                "auto_fallback", true));''',
+           '''        threads.addView(numberRow("最高线程数", "硬限制 2–16，默认 8",\n                "max_threads", 8));\n        threads.addView(divider());\n        threads.addView(numberRow("初始线程数", "范围 2–最高线程数，默认 4",\n                "initial_threads", 4));\n        threads.addView(divider());\n        threads.addView(numberRow("启用阈值（MiB）", "8–4096，小文件保持系统原始传输",\n                "min_size_mb", 32));\n        threads.addView(divider());\n        threads.addView(numberRow("分片大小（MiB）", "4–64，临时分片采用有界窗口",\n                "chunk_size_mb", 16));\n        threads.addView(divider());\n        threads.addView(infoRow("Range 完整性校验", "强制：206 + Content-Range + If-Range"));\n        threads.addView(divider());\n        threads.addView(infoRow("失败策略", "预检失败直接回退；运行中失败交由系统重试/续传"));'''),
+          ('''    private void saveNumber(EditText input, String key, int fallback) {\n        int value = fallback;\n        try {\n            value = Integer.parseInt(input.getText().toString());\n        } catch (Throwable ignored) {\n        }\n        value = Math.max(1, Math.min(1024, value));\n        input.setText(String.valueOf(value));\n        preferences.edit().putInt(key, value).apply();\n    }''',
+           '''    private void saveNumber(EditText input, String key, int fallback) {\n        int value = fallback;\n        try {\n            value = Integer.parseInt(input.getText().toString());\n        } catch (Throwable ignored) {\n        }\n\n        SharedPreferences.Editor editor = preferences.edit();\n        if ("max_threads".equals(key)) {\n            value = Math.max(2, Math.min(16, value));\n            int initial = Math.max(2, Math.min(value,\n                    preferences.getInt("initial_threads", 4)));\n            editor.putInt("initial_threads", initial);\n        } else if ("initial_threads".equals(key)) {\n            int maximum = Math.max(2, Math.min(16,\n                    preferences.getInt("max_threads", 8)));\n            value = Math.max(2, Math.min(maximum, value));\n        } else if ("chunk_size_mb".equals(key)) {\n            value = Math.max(4, Math.min(64, value));\n        } else if ("min_size_mb".equals(key)) {\n            value = Math.max(8, Math.min(4096, value));\n        } else {\n            value = Math.max(1, Math.min(4096, value));\n        }\n        input.setText(String.valueOf(value));\n        editor.putInt(key, value).apply();\n    }''')
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one UI block, found {count}: {old[:80]!r}')
+              text = text.replace(old, new)
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm .github/workflows/patch-range-ui.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/io/github/zhanfg/sda/ModernMainActivity.java .github/workflows/patch-range-ui.yml
+          git commit -m 'fix: align UI with actual Range runtime'
+          git push origin HEAD:fix/restore-direct-source-build
