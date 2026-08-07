@@ -34,20 +34,18 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 /**
- * Real system-download accelerator for the ColorOS DownloadProvider.
+ * Bounded HTTP Range accelerator for the ColorOS DownloadProvider.
  *
- * <p>The accelerator never writes the DownloadProvider-owned destination descriptor itself.
- * Parallel HTTP range workers download bounded chunks into private temporary files. Those chunks
- * are exposed as one sequential InputStream and passed back into the vendor's original copy loop.
- * The system therefore remains the single writer responsible for progress accounting, fsync,
- * destination semantics and retry/resume behavior.</p>
+ * <p>Parallel workers only write private temporary chunks. The original vendor copy method remains
+ * the sole writer to the DownloadProvider-owned destination descriptor. Acceleration is enabled
+ * only when the original request Range state, server response window, resource validator and a
+ * strict 206 probe all agree. Any uncertainty before accelerated bytes are exposed falls back to
+ * the system input stream.</p>
  */
 public final class ModuleMain extends XposedModule {
     private static final String TAG = "SysDownloadAccel";
@@ -56,19 +54,16 @@ public final class ModuleMain extends XposedModule {
             "com.android.providers.downloads.d",
             "com.android.providers.downloads.e"
     };
-    private static final Pattern CONTENT_RANGE = Pattern.compile(
-            "bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)",
-            Pattern.CASE_INSENSITIVE
-    );
     private static final String STATUS_URI = "content://io.github.zhanfg.sda.rootbridge";
 
     private static final ThreadLocal<ActiveTransfer> ACTIVE_TRANSFER = new ThreadLocal<>();
     private static final Map<Object, ParallelRangeInputStream> ACTIVE_SESSIONS =
             Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Map<HttpURLConnection, RequestSnapshot> REQUEST_SNAPSHOTS =
+            Collections.synchronizedMap(new WeakHashMap<>());
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
-        cleanupStaleSpool();
         log(Log.INFO, TAG, "Range engine loaded in " + param.getProcessName()
                 + ", API " + getApiVersion());
     }
@@ -76,7 +71,6 @@ public final class ModuleMain extends XposedModule {
     @Override
     public void onPackageReady(PackageReadyParam param) {
         if (!TARGET_PACKAGE.equals(param.getPackageName())) return;
-
         for (String className : TRANSFER_CLASSES) {
             try {
                 installHooks(param.getClassLoader(), className);
@@ -94,7 +88,7 @@ public final class ModuleMain extends XposedModule {
 
         if (transferMethod == null || copyMethod == null || configureMethod == null) {
             log(Log.WARN, TAG, "Compatibility preflight rejected " + className
-                    + ": required transfer/copy/configure methods were not found");
+                    + ": required transfer/copy/configure methods were not found uniquely");
             return;
         }
         if (copyMethod.getReturnType() != Void.TYPE) {
@@ -107,6 +101,19 @@ public final class ModuleMain extends XposedModule {
         copyMethod.setAccessible(true);
         configureMethod.setAccessible(true);
 
+        hook(configureMethod)
+                .setId("sda.request-snapshot." + className)
+                .setPriority(PRIORITY_LOWEST)
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .intercept(chain -> {
+                    Object result = chain.proceed();
+                    HttpURLConnection connection = (HttpURLConnection) chain.getArg(0);
+                    if (connection != null) {
+                        REQUEST_SNAPSHOTS.put(connection, RequestSnapshot.capture(connection));
+                    }
+                    return result;
+                });
+
         hook(transferMethod)
                 .setId("sda.connection." + className)
                 .setPriority(PRIORITY_HIGHEST)
@@ -114,8 +121,10 @@ public final class ModuleMain extends XposedModule {
                 .intercept(chain -> {
                     ActiveTransfer previous = ACTIVE_TRANSFER.get();
                     HttpURLConnection connection = (HttpURLConnection) chain.getArg(0);
+                    RequestSnapshot snapshot = REQUEST_SNAPSHOTS.remove(connection);
+                    if (snapshot == null) snapshot = RequestSnapshot.capture(connection);
                     ACTIVE_TRANSFER.set(new ActiveTransfer(
-                            chain.getThisObject(), connection, configureMethod));
+                            chain.getThisObject(), connection, configureMethod, snapshot));
                     try {
                         return chain.proceed();
                     } finally {
@@ -173,7 +182,7 @@ public final class ModuleMain extends XposedModule {
 
         Settings settings = Settings.load(this);
         if (!settings.enabled) {
-            report(owner, "disabled", "Range engine disabled by user", 0, 0);
+            report(owner, "disabled", "Range engine disabled or preferences unavailable", 0, 0);
             return chain.proceed();
         }
 
@@ -220,7 +229,8 @@ public final class ModuleMain extends XposedModule {
             return result;
         } catch (Throwable error) {
             log(Log.WARN, TAG,
-                    "Accelerated input failed; DownloadProvider will use its normal retry/resume path",
+                    "Accelerated input failed after " + accelerated.deliveredBytes()
+                            + " bytes; DownloadProvider retry/resume will remain authoritative",
                     error);
             report(owner, "error", "Range stream: " + error.getClass().getSimpleName(),
                     accelerated.workerCount(), accelerated.deliveredBytes());
@@ -257,15 +267,17 @@ public final class ModuleMain extends XposedModule {
             return exact;
         } catch (Throwable ignored) {
         }
+        Method match = null;
         for (Method method : type.getDeclaredMethods()) {
             Class<?>[] params = method.getParameterTypes();
             if (params.length == 1
                     && HttpURLConnection.class.isAssignableFrom(params[0])
                     && !"g".equals(method.getName())) {
-                return method;
+                if (match != null) return null;
+                match = method;
             }
         }
-        return null;
+        return match;
     }
 
     private static Method findCopyMethod(Class<?> type) {
@@ -343,9 +355,8 @@ public final class ModuleMain extends XposedModule {
         return null;
     }
 
-    private static void cleanupStaleSpool() {
+    private static void cleanupStaleSpool(File root) {
         try {
-            File root = tempRoot();
             File[] files = root.listFiles();
             if (files == null) return;
             long cutoff = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(6);
@@ -356,11 +367,6 @@ public final class ModuleMain extends XposedModule {
             }
         } catch (Throwable ignored) {
         }
-    }
-
-    private static File tempRoot() {
-        String value = System.getProperty("java.io.tmpdir");
-        return value == null || value.isEmpty() ? new File(".") : new File(value);
     }
 
     private static void deleteRecursively(File file) {
@@ -375,15 +381,37 @@ public final class ModuleMain extends XposedModule {
         file.delete();
     }
 
+    private static final class RequestSnapshot {
+        final boolean known;
+        final String rangeHeader;
+
+        RequestSnapshot(boolean known, String rangeHeader) {
+            this.known = known;
+            this.rangeHeader = rangeHeader;
+        }
+
+        static RequestSnapshot capture(HttpURLConnection connection) {
+            if (connection == null) return new RequestSnapshot(false, null);
+            try {
+                return new RequestSnapshot(true, connection.getRequestProperty("Range"));
+            } catch (Throwable ignored) {
+                return new RequestSnapshot(false, null);
+            }
+        }
+    }
+
     private static final class ActiveTransfer {
         final Object owner;
         final HttpURLConnection connection;
         final Method configureMethod;
+        final RequestSnapshot requestSnapshot;
 
-        ActiveTransfer(Object owner, HttpURLConnection connection, Method configureMethod) {
+        ActiveTransfer(Object owner, HttpURLConnection connection, Method configureMethod,
+                       RequestSnapshot requestSnapshot) {
             this.owner = owner;
             this.connection = connection;
             this.configureMethod = configureMethod;
+            this.requestSnapshot = requestSnapshot;
         }
     }
 
@@ -409,20 +437,20 @@ public final class ModuleMain extends XposedModule {
         }
 
         static Settings load(ModuleMain module) {
-            boolean enabled = true;
+            boolean enabled = false;
             int maxThreads = 8;
             int initialThreads = 4;
             int minimumSizeMb = 32;
             int chunkSizeMb = 16;
             try {
                 SharedPreferences preferences = module.getRemotePreferences("module_settings");
-                enabled = preferences.getBoolean("enabled", true);
+                enabled = preferences.getBoolean("enabled", false);
                 maxThreads = clamp(preferences.getInt("max_threads", 8), 2, 16);
                 initialThreads = clamp(preferences.getInt("initial_threads", 4), 2, maxThreads);
                 minimumSizeMb = clamp(preferences.getInt("min_size_mb", 32), 8, 4096);
                 chunkSizeMb = clamp(preferences.getInt("chunk_size_mb", 16), 4, 64);
             } catch (Throwable ignored) {
-                // Safe functional defaults are used when remote preferences are unavailable.
+                // Preference IPC failure is fail-closed: normal DownloadProvider transfer wins.
             }
             return new Settings(enabled, maxThreads, initialThreads,
                     minimumSizeMb * 1024L * 1024L,
@@ -441,6 +469,7 @@ public final class ModuleMain extends XposedModule {
         final Object owner;
         final HttpURLConnection baseConnection;
         final Method configureMethod;
+        final Object configureLock = new Object();
         final Network network;
         final URL url;
         final Validator validator;
@@ -479,22 +508,18 @@ public final class ModuleMain extends XposedModule {
                 return reject(owner, active, "encoded response: " + encoding);
             }
 
-            int code = base.getResponseCode();
-            long current;
-            long total;
-            if (code == HttpURLConnection.HTTP_PARTIAL) {
-                ContentRange range = ContentRange.parse(base.getHeaderField("Content-Range"));
-                if (range == null) return reject(owner, active, "invalid base Content-Range");
-                current = range.start;
-                total = range.total;
-            } else if (code == HttpURLConnection.HTTP_OK) {
-                current = 0L;
-                total = base.getContentLengthLong();
-                if (total <= 0L) return reject(owner, active, "unknown content length");
-            } else {
-                return reject(owner, active, "HTTP " + code);
+            RangeProtocol.BaseWindow baseWindow = RangeProtocol.resolveBaseWindow(
+                    base.getResponseCode(),
+                    active.requestSnapshot.known,
+                    active.requestSnapshot.rangeHeader,
+                    base.getHeaderField("Content-Range"),
+                    base.getContentLengthLong());
+            if (!baseWindow.accepted) {
+                return reject(owner, active, baseWindow.reason);
             }
 
+            long current = baseWindow.current;
+            long total = baseWindow.total;
             long remaining = total - current;
             if (remaining < settings.minimumSize) {
                 return reject(owner, active, "below acceleration threshold");
@@ -507,7 +532,8 @@ public final class ModuleMain extends XposedModule {
                 return reject(owner, active, "no stable ETag/Last-Modified validator");
             }
 
-            int threads = chooseThreads(remaining, settings);
+            int threads = RangeProtocol.chooseThreads(
+                    remaining, settings.initialThreads, settings.maxThreads, settings.chunkSize);
             if (threads < 2) return reject(owner, active, "scheduler selected one worker");
 
             Network network = findNetwork(owner);
@@ -527,13 +553,16 @@ public final class ModuleMain extends XposedModule {
                 probe = openRangeConnection(this, current, current, settings);
                 int code = probe.getResponseCode();
                 if (code != HttpURLConnection.HTTP_PARTIAL) return false;
-                ContentRange range = ContentRange.parse(probe.getHeaderField("Content-Range"));
+                RangeProtocol.ContentRange range = RangeProtocol.parseContentRange(
+                        probe.getHeaderField("Content-Range"));
                 if (range == null || range.start != current || range.end != current
                         || range.total != total) return false;
                 if (!validator.matches(probe)) return false;
                 String encoding = probe.getHeaderField("Content-Encoding");
                 if (encoding != null && !encoding.isEmpty()
                         && !"identity".equalsIgnoreCase(encoding)) return false;
+                long declaredLength = probe.getContentLengthLong();
+                if (declaredLength > 0L && declaredLength != 1L) return false;
                 input = probe.getInputStream();
                 return input.read() >= 0;
             } finally {
@@ -547,18 +576,6 @@ public final class ModuleMain extends XposedModule {
                     active.configureMethod, findNetwork(owner),
                     active.connection.getURL(), Validator.from(active.connection),
                     0L, 0L, 0);
-        }
-
-        private static int chooseThreads(long remaining, Settings settings) {
-            int automatic;
-            if (remaining < 256L * 1024L * 1024L) automatic = 2;
-            else if (remaining < 1024L * 1024L * 1024L) automatic = 4;
-            else if (remaining < 4L * 1024L * 1024L * 1024L) automatic = 6;
-            else automatic = 8;
-            int requested = Math.max(settings.initialThreads, automatic);
-            long chunks = Math.max(1L, (remaining + settings.chunkSize - 1L) / settings.chunkSize);
-            return (int) Math.max(1L,
-                    Math.min(Math.min(settings.maxThreads, requested), chunks));
         }
     }
 
@@ -617,7 +634,9 @@ public final class ModuleMain extends XposedModule {
         connection.setDoInput(true);
 
         try {
-            preflight.configureMethod.invoke(preflight.owner, connection);
+            synchronized (preflight.configureLock) {
+                preflight.configureMethod.invoke(preflight.owner, connection);
+            }
         } catch (InvocationTargetException invocation) {
             Throwable cause = invocation.getCause();
             if (cause instanceof Exception) throw (Exception) cause;
@@ -665,18 +684,25 @@ public final class ModuleMain extends XposedModule {
             this.settings = settings;
             this.chunkSize = settings.chunkSize;
             long count = (preflight.remaining + chunkSize - 1L) / chunkSize;
-            if (count <= 0 || count > Integer.MAX_VALUE) {
+            if (count <= 0L || count > Integer.MAX_VALUE) {
                 throw new IOException("invalid chunk count: " + count);
             }
             this.chunkCount = (int) count;
             this.workerCount = Math.max(2, Math.min(preflight.threads, chunkCount));
             this.windowSize = Math.min(chunkCount, Math.max(workerCount + 1, workerCount * 2));
 
-            File root = tempRoot();
-            if (!root.exists() && !root.mkdirs()) throw new IOException("temp root unavailable");
+            Context context = findContext(owner);
+            if (context == null || context.getCacheDir() == null) {
+                throw new IOException("DownloadProvider cache directory unavailable");
+            }
+            File root = new File(context.getCacheDir(), "sda-range-spool");
+            if (!root.exists() && !root.mkdirs()) throw new IOException("private spool root unavailable");
+            cleanupStaleSpool(root);
+
             long spoolBudget = Math.min(preflight.remaining, chunkSize * (long) windowSize);
             long reserve = 64L * 1024L * 1024L;
-            if (root.getUsableSpace() > 0 && root.getUsableSpace() < spoolBudget + reserve) {
+            long usable = root.getUsableSpace();
+            if (usable > 0L && usable < spoolBudget + reserve) {
                 throw new IOException("insufficient temporary storage for bounded Range spool");
             }
             this.sessionDir = new File(root,
@@ -709,7 +735,7 @@ public final class ModuleMain extends XposedModule {
         @Override
         public int read(byte[] buffer, int offset, int length) throws IOException {
             if (buffer == null) throw new NullPointerException("buffer");
-            if (offset < 0 || length < 0 || offset + length > buffer.length) {
+            if (offset < 0 || length < 0 || offset > buffer.length - length) {
                 throw new IndexOutOfBoundsException();
             }
             if (length == 0) return 0;
@@ -717,7 +743,7 @@ public final class ModuleMain extends XposedModule {
             if (delivered >= preflight.remaining) return -1;
 
             ensureCurrentChunk();
-            int request = (int) Math.min(length, currentChunk.length - currentChunk.read);
+            int request = (int) Math.min((long) length, currentChunk.length - currentChunk.read);
             int read = currentInput.read(buffer, offset, request);
             if (read < 0) throw new EOFException("premature end of spooled Range chunk");
             currentChunk.read += read;
@@ -777,11 +803,11 @@ public final class ModuleMain extends XposedModule {
         }
 
         private ChunkFile downloadChunk(int index) throws Exception {
-            long relativeStart = index * chunkSize;
-            long absoluteStart = preflight.current + relativeStart;
-            long absoluteEnd = Math.min(preflight.total - 1L,
-                    absoluteStart + chunkSize - 1L);
-            long expectedLength = absoluteEnd - absoluteStart + 1L;
+            RangeProtocol.ChunkBounds bounds = RangeProtocol.chunkBounds(
+                    preflight.current, preflight.total, chunkSize, index);
+            long absoluteStart = bounds.start;
+            long absoluteEnd = bounds.end;
+            long expectedLength = bounds.length();
             Throwable last = null;
 
             for (int attempt = 1; attempt <= 2; attempt++) {
@@ -799,7 +825,7 @@ public final class ModuleMain extends XposedModule {
                     if (response != HttpURLConnection.HTTP_PARTIAL) {
                         throw new IOException("expected HTTP 206, got " + response);
                     }
-                    ContentRange range = ContentRange.parse(
+                    RangeProtocol.ContentRange range = RangeProtocol.parseContentRange(
                             connection.getHeaderField("Content-Range"));
                     if (range == null || range.start != absoluteStart
                             || range.end != absoluteEnd || range.total != preflight.total) {
@@ -814,7 +840,7 @@ public final class ModuleMain extends XposedModule {
                         throw new IOException("encoded Range response: " + encoding);
                     }
                     long declaredLength = connection.getContentLengthLong();
-                    if (declaredLength > 0 && declaredLength != expectedLength) {
+                    if (declaredLength > 0L && declaredLength != expectedLength) {
                         throw new IOException("Range length mismatch: " + declaredLength
                                 + "/" + expectedLength);
                     }
@@ -823,7 +849,7 @@ public final class ModuleMain extends XposedModule {
                     output = new FileOutputStream(file, false);
                     byte[] buffer = new byte[128 * 1024];
                     long remaining = expectedLength;
-                    while (remaining > 0) {
+                    while (remaining > 0L) {
                         if (closed.get() || Thread.currentThread().isInterrupted()) {
                             throw new CancellationException("Range session cancelled");
                         }
@@ -834,16 +860,20 @@ public final class ModuleMain extends XposedModule {
                         remaining -= count;
                     }
                     output.flush();
+                    if (file.length() != expectedLength) {
+                        throw new IOException("spooled chunk length mismatch: " + file.length()
+                                + "/" + expectedLength);
+                    }
                     return new ChunkFile(file, expectedLength);
                 } catch (Throwable error) {
                     last = error;
                     //noinspection ResultOfMethodCallIgnored
                     file.delete();
                     if (error instanceof CancellationException || closed.get()) {
-              if (error instanceof Exception) throw (Exception) error;
-              if (error instanceof Error) throw (Error) error;
-              throw new IOException("Range session cancelled", error);
-          }
+                        if (error instanceof Exception) throw (Exception) error;
+                        if (error instanceof Error) throw (Error) error;
+                        throw new IOException("Range session cancelled", error);
+                    }
                 } finally {
                     closeQuietly(output);
                     closeQuietly(input);
@@ -862,14 +892,10 @@ public final class ModuleMain extends XposedModule {
         void cancel(String reason) {
             if (!closed.compareAndSet(false, true)) return;
             module.log(Log.INFO, TAG, "Cancelling Range session: " + reason);
-            for (HttpURLConnection connection : new ArrayList<>(activeConnections)) {
-                try {
-                    connection.disconnect();
-                } catch (Throwable ignored) {
-                }
-            }
+            disconnectWorkers();
             for (Future<ChunkFile> future : futures.values()) future.cancel(true);
             executor.shutdownNow();
+            awaitWorkers();
             closeQuietly(currentInput);
             currentInput = null;
             deleteRecursively(sessionDir);
@@ -878,22 +904,30 @@ public final class ModuleMain extends XposedModule {
         @Override
         public void close() {
             if (!closed.compareAndSet(false, true)) return;
+            disconnectWorkers();
+            for (Future<ChunkFile> future : futures.values()) future.cancel(true);
+            executor.shutdownNow();
+            awaitWorkers();
+            closeQuietly(currentInput);
+            currentInput = null;
+            deleteRecursively(sessionDir);
+        }
+
+        private void disconnectWorkers() {
             for (HttpURLConnection connection : new ArrayList<>(activeConnections)) {
                 try {
                     connection.disconnect();
                 } catch (Throwable ignored) {
                 }
             }
-            for (Future<ChunkFile> future : futures.values()) future.cancel(true);
-            executor.shutdownNow();
+        }
+
+        private void awaitWorkers() {
             try {
                 executor.awaitTermination(2, TimeUnit.SECONDS);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
-            closeQuietly(currentInput);
-            currentInput = null;
-            deleteRecursively(sessionDir);
         }
     }
 
@@ -905,33 +939,6 @@ public final class ModuleMain extends XposedModule {
         ChunkFile(File file, long length) {
             this.file = file;
             this.length = length;
-        }
-    }
-
-    private static final class ContentRange {
-        final long start;
-        final long end;
-        final long total;
-
-        ContentRange(long start, long end, long total) {
-            this.start = start;
-            this.end = end;
-            this.total = total;
-        }
-
-        static ContentRange parse(String header) {
-            if (header == null) return null;
-            Matcher matcher = CONTENT_RANGE.matcher(header.trim());
-            if (!matcher.matches() || "*".equals(matcher.group(3))) return null;
-            try {
-                long start = Long.parseLong(matcher.group(1));
-                long end = Long.parseLong(matcher.group(2));
-                long total = Long.parseLong(matcher.group(3));
-                if (start < 0 || end < start || total <= end) return null;
-                return new ContentRange(start, end, total);
-            } catch (NumberFormatException ignored) {
-                return null;
-            }
         }
     }
 

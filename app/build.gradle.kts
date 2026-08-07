@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.zhanfg.sda"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.3.0-alpha14"
+        versionCode = 16
+        versionName = "0.3.0-alpha15"
     }
 
     buildTypes {
@@ -56,4 +56,5 @@ dependencies {
     // Core 1.18+ requires API 36.1, while 1.19 also requires AGP 9.1.
     implementation("androidx.core:core:1.17.0")
     compileOnly("io.github.libxposed:api:102.0.0")
+    testImplementation("junit:junit:4.13.2")
 }
