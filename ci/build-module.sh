@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.3.0-alpha14}"
+VERSION="${VERSION:-0.3.0-alpha15}"
 TARGET=aarch64-linux-android
 ANDROID_API="${ANDROID_API:-26}"
 NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
@@ -14,7 +14,10 @@ bash ci/validate-source.sh
 
 if [ "${SKIP_ANDROID_BUILD:-0}" != "1" ]; then
   "$GRADLE_BIN" --no-daemon --stacktrace \
-    :app:assembleDebug :app:assembleRelease :app:lintDebug
+    :app:testDebugUnitTest \
+    :app:assembleDebug \
+    :app:assembleRelease \
+    :app:lintDebug
 fi
 
 DEBUG_APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"

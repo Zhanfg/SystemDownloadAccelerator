@@ -40,6 +40,35 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Restore Alpha PR test signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: sda-alpha15-debug-signing-v1-${{ github.event.pull_request.number || github.ref_name }}
+
+      - name: Ensure Alpha PR test signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          if [ ! -s "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -noprompt
+          fi
+          keytool -list -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            | grep -E 'SHA256:|Valid from:'
+
       - name: Install Android SDK and NDK
         shell: bash
         run: |
@@ -74,6 +103,18 @@ jobs:
       - name: Validate recovered source
         run: bash ci/validate-source.sh
 
+      - name: Test Range protocol invariants
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle \
+            --no-daemon \
+            --no-build-cache \
+            --rerun-tasks \
+            --stacktrace \
+            :app:testDebugUnitTest \
+            2>&1 | tee build-logs/unit-tests.log
+
       - name: Build and lint APKs from scratch
         shell: bash
         run: |
@@ -97,7 +138,8 @@ jobs:
             \( -name 'lint-results-*.txt' \
             -o -name 'lint-results-*.html' \
             -o -name 'lint-results-*.xml' \
-            -o -name 'lint-results-*.sarif' \) \
+            -o -name 'lint-results-*.sarif' \
+            -o -name 'TEST-*.xml' \) \
             -print -exec cp --parents {} build-logs/ \; 2>/dev/null || true
 
       - name: Upload Gradle diagnostics
@@ -126,13 +168,13 @@ jobs:
         shell: bash
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs \
-            dist/SystemDownloadAccelerator-0.3.0-alpha14.apk \
+            dist/SystemDownloadAccelerator-0.3.0-alpha15.apk \
             > dist/APK-CERTIFICATES.txt
 
       - name: Upload candidates
         uses: actions/upload-artifact@v4
         with:
-          name: SystemDownloadAccelerator-0.3.0-alpha14-candidates
+          name: SystemDownloadAccelerator-0.3.0-alpha15-candidates
           path: dist/*
           if-no-files-found: error
           retention-days: 14

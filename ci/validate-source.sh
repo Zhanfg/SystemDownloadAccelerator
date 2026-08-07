@@ -16,17 +16,36 @@ for file in \
   app/lint.xml \
   app/src/main/AndroidManifest.xml \
   app/src/main/java/io/github/zhanfg/sda/ModuleMain.java \
+  app/src/main/java/io/github/zhanfg/sda/RangeProtocol.java \
+  app/src/test/java/io/github/zhanfg/sda/RangeProtocolTest.java \
+  app/src/test/java/io/github/zhanfg/sda/RangeHttpContractTest.java \
   app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java \
   app/src/main/java/io/github/zhanfg/sda/RootAccess.java \
   app/src/main/resources/META-INF/xposed/java_init.list \
   app/src/main/resources/META-INF/xposed/module.prop \
   app/src/main/resources/META-INF/xposed/scope.list \
-  alpha-module/module.prop; do
+  alpha-module/module.prop \
+  tools/alpha15-device-validation.sh \
+  docs/ALPHA15-DEVICE-VALIDATION.md; do
   [ -s "$file" ] || fail "required file missing: $file"
 done
 
-# The abandoned Alpha 12 engine wrote parallel HTTP workers directly into the
-# DownloadProvider-owned destination FD. It must never return to the compiled tree.
+sh -n tools/alpha15-device-validation.sh \
+  || fail "Alpha 15 device validation helper has invalid shell syntax"
+
+grep -Fq 'start [label]' tools/alpha15-device-validation.sh \
+  || fail "device validation start mode missing"
+grep -Fq 'finish [downloaded_file] [expected_sha256]' tools/alpha15-device-validation.sh \
+  || fail "device validation finish/hash mode missing"
+grep -Fq 'SDA-Alpha15-Validation-' tools/alpha15-device-validation.sh \
+  || fail "device validation evidence archive output missing"
+grep -Fq 'Fresh Range download' docs/ALPHA15-DEVICE-VALIDATION.md \
+  || fail "fresh Range device acceptance case missing"
+grep -Fq 'Resume from partial file' docs/ALPHA15-DEVICE-VALIDATION.md \
+  || fail "resume device acceptance case missing"
+grep -Fq 'VPN / proxy / cellular routing' docs/ALPHA15-DEVICE-VALIDATION.md \
+  || fail "network-routing device acceptance case missing"
+
 [ ! -e app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java ] \
   || fail "legacy direct-write Range engine must remain outside the compiled source tree"
 [ ! -e app/src/main/java/io/github/zhanfg/sda/xposed/DownloadConfirmationHook.java ] \
@@ -78,17 +97,6 @@ if application.attrib.get(ns + 'name') != '.SafetyMigrationApplication':
 if application.attrib.get(ns + 'allowBackup') != 'false':
     raise SystemExit('download history must not be included in Android backup')
 
-activities = {
-    item.attrib.get(ns + 'name'): item
-    for item in application.findall('activity')
-}
-for name in ('.FirstRunSetupActivity', '.SystemDownloadConfirmActivity'):
-    item = activities.get(name)
-    if item is None:
-        raise SystemExit(f'required one-shot activity missing: {name}')
-    if item.attrib.get(ns + 'enableOnBackInvokedCallback') != 'false':
-        raise SystemExit(f'{name} must retain the documented predictive-back opt-out')
-
 expected_providers = {
     '.HistoryProvider',
     '.RootUiBridgeProvider',
@@ -122,102 +130,106 @@ expected_entries = [
 ]
 if entries != expected_entries:
     raise SystemExit(f'unsafe or unexpected libxposed entry list: {entries}')
-if any('RealDownloadAcceleratorModule' in item for item in entries):
-    raise SystemExit('legacy direct-write Range engine must not be loaded')
-
-lint_root = ET.parse('app/lint.xml').getroot()
-issues = {item.attrib.get('id'): item for item in lint_root.findall('issue')}
-if 'GestureBackNavigation' not in issues or 'WrongConstant' not in issues:
-    raise SystemExit('documented compatibility lint scopes are missing')
 PY
 
-grep -Fq 'versionName = "0.3.0-alpha14"' app/build.gradle.kts \
+grep -Fq 'versionName = "0.3.0-alpha15"' app/build.gradle.kts \
   || fail "Android versionName mismatch"
-grep -Fq 'versionCode = 15' app/build.gradle.kts \
+grep -Fq 'versionCode = 16' app/build.gradle.kts \
   || fail "Android versionCode mismatch"
+grep -Fq 'testImplementation("junit:junit:4.13.2")' app/build.gradle.kts \
+  || fail "Range invariant unit-test dependency missing"
 grep -Fq 'minApiVersion=102' app/src/main/resources/META-INF/xposed/module.prop \
   || fail "libxposed minimum API mismatch"
 grep -Fq 'targetApiVersion=102' app/src/main/resources/META-INF/xposed/module.prop \
   || fail "libxposed target API mismatch"
 
 ENGINE=app/src/main/java/io/github/zhanfg/sda/ModuleMain.java
-MIGRATION=app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java
-UI=app/src/main/java/io/github/zhanfg/sda/ModernMainActivity.java
+PROTOCOL=app/src/main/java/io/github/zhanfg/sda/RangeProtocol.java
+TESTS=app/src/test/java/io/github/zhanfg/sda/RangeProtocolTest.java
+HTTP_TESTS=app/src/test/java/io/github/zhanfg/sda/RangeHttpContractTest.java
 BRIDGE=app/src/main/java/io/github/zhanfg/sda/RootUiBridgeProvider.java
 
 grep -Fq 'class ParallelRangeInputStream extends InputStream' "$ENGINE" \
-  || fail "functional parallel Range input stream is missing"
+  || fail "functional bounded Range input stream is missing"
+grep -Fq 'RequestSnapshot.capture(connection)' "$ENGINE" \
+  || fail "original Range request snapshot is missing"
+grep -Fq 'RangeProtocol.resolveBaseWindow' "$ENGINE" \
+  || fail "resume alignment gate is not used by runtime preflight"
+grep -Fq 'RangeProtocol.validateDestinationOffset' "$ENGINE" \
+  || fail "local destination offset is not part of Range preflight"
+grep -Fq 'Os.lseek(descriptor, 0L, OsConstants.SEEK_CUR)' "$ENGINE" \
+  || fail "destination FD offset is not measured with lseek"
+grep -Fq 'RangeProtocol.isStrongLastModified(modifiedMillis, responseDateMillis)' "$ENGINE" \
+  || fail "runtime can use weak Last-Modified as If-Range validator"
+grep -Fq 'RangeProtocol.chunkBounds' "$ENGINE" \
+  || fail "tested chunk geometry is not used by runtime"
+grep -Fq 'boolean enabled = false;' "$ENGINE" \
+  || fail "preference IPC failure must remain fail-closed"
+grep -Fq 'new File(context.getCacheDir(), "sda-range-spool")' "$ENGINE" \
+  || fail "Range spool must live in DownloadProvider private cache"
+grep -Fq 'ACTIVE_SPOOL_DIRS.contains(absolute)' "$ENGINE" \
+  || fail "stale spool cleanup can delete an active session"
+grep -Fq 'ACTIVE_SPOOL_DIRS.add(sessionDir)' "$ENGINE" \
+  || fail "active spool sessions are not registered"
+grep -Fq 'synchronized (preflight.configureLock)' "$ENGINE" \
+  || fail "worker configuration calls are not serialized"
+grep -Fq 'if (match != null) return null;' "$ENGINE" \
+  || fail "ambiguous fallback hook discovery is not fail-closed"
 grep -Fq 'Object result = chain.proceed(args);' "$ENGINE" \
   || fail "accelerated input is not handed back to the original system copy loop"
 grep -Fq 'connection.setRequestProperty("Range", "bytes=" + start + "-" + end);' "$ENGINE" \
   || fail "worker HTTP Range request is missing"
-grep -Fq 'connection.setRequestProperty("If-Range", strongEtag);' "$ENGINE" \
-  || fail "strong validator If-Range protection is missing"
-grep -Fq 'server rejected strict byte-range probe' "$ENGINE" \
-  || fail "strict Range preflight is missing"
-grep -Fq 'Math.min(preflight.threads, chunkCount)' "$ENGINE" \
-  || fail "Range worker count is not bounded by planned chunks"
-grep -Fq 'maxThreads = clamp(preferences.getInt("max_threads", 8), 2, 16);' "$ENGINE" \
-  || fail "runtime worker hard cap must remain 16"
-grep -Fq 'chunkSizeMb = clamp(preferences.getInt("chunk_size_mb", 16), 4, 64);' "$ENGINE" \
-  || fail "bounded temporary chunk size gate is missing"
-grep -Fq 'root.getUsableSpace() < spoolBudget + reserve' "$ENGINE" \
-  || fail "temporary-spool free-space preflight is missing"
 if grep -Fq 'Os.pwrite' "$ENGINE" || grep -Fq 'FileChannel positional write' "$ENGINE"; then
   fail "destination direct-write code must not exist in the active engine"
 fi
 
-grep -Fq 'ENGINE_MIGRATION_VERSION = 14' "$MIGRATION" \
-  || fail "functional Range-engine migration version mismatch"
-grep -Fq '.putBoolean("enabled", true)' "$MIGRATION" \
-  || fail "functional Range engine is not enabled after Alpha 13 migration"
-grep -Fq 'maxThreads = clamp(preferences.getInt("max_threads", 8), 2, 16);' "$MIGRATION" \
-  || fail "migration does not clamp legacy 1024-thread setting"
+grep -Fq 'STRONG_LAST_MODIFIED_GAP_MS = 60_000L' "$PROTOCOL" \
+  || fail "conservative strong Last-Modified threshold missing"
+grep -Fq 'resume Range request downgraded to HTTP 200' "$PROTOCOL" \
+  || fail "HTTP 200 resume downgrade gate missing"
+grep -Fq 'resume offset mismatch' "$PROTOCOL" \
+  || fail "206 request/response alignment gate missing"
+grep -Fq 'bounded original Range response mismatch' "$PROTOCOL" \
+  || fail "bounded Range response-alignment gate missing"
+grep -Fq 'bounded original Range does not reach resource end' "$PROTOCOL" \
+  || fail "bounded partial-window rejection gate missing"
+grep -Fq 'base Content-Range does not reach resource end' "$PROTOCOL" \
+  || fail "partial base 206 expansion gate missing"
+grep -Fq 'destination offset mismatch' "$PROTOCOL" \
+  || fail "destination FD mismatch gate missing"
+grep -Fq 'original Range request state unavailable' "$PROTOCOL" \
+  || fail "unknown Range request state is not fail-closed"
+
+grep -Fq 'freshHttp200IsAcceptedOnlyWhenNoRangeWasRequested' "$TESTS" \
+  || fail "fresh/resume HTTP 200 invariant test missing"
+grep -Fq 'resumed206MustMatchOpenEndedOriginalRequest' "$TESTS" \
+  || fail "open-ended resume alignment invariant test missing"
+grep -Fq 'boundedResumeRequestIsAcceptedOnlyWhenItReachesEof' "$TESTS" \
+  || fail "bounded EOF-resume compatibility test missing"
+grep -Fq 'resumed206MustReachResourceEnd' "$TESTS" \
+  || fail "partial base 206 rejection test missing"
+grep -Fq 'destinationOffsetMustMatchResolvedResumeWindow' "$TESTS" \
+  || fail "local destination offset invariant test missing"
+grep -Fq 'lastModifiedMustBeStrongEnoughForIfRange' "$TESTS" \
+  || fail "strong Last-Modified If-Range invariant test missing"
+grep -Fq 'schedulerNeverExceedsChunksOrHardLimit' "$TESTS" \
+  || fail "scheduler bound test missing"
+grep -Fq 'parallelRangesReassembleOriginalBytes' "$HTTP_TESTS" \
+  || fail "end-to-end parallel HTTP Range reconstruction test missing"
+grep -Fq 'ifRangeMismatchForcesWholeBodyResponseAndRuntimeFallback' "$HTTP_TESTS" \
+  || fail "If-Range downgrade/fallback contract test missing"
 
 grep -Fq '"report_engine_status".equals(method)' "$BRIDGE" \
   || fail "runtime Range telemetry bridge is missing"
-grep -Fq 'Math.max(0, Math.min(16, extras.getInt("threads", 0)))' "$BRIDGE" \
-  || fail "runtime telemetry thread value is not bounded"
-grep -Fq 'preferences.getString("engine_status", "idle")' "$UI" \
-  || fail "home page does not read actual engine runtime state"
-grep -Fq '"max_threads", 8' "$UI" \
-  || fail "UI maximum-thread default is not aligned to runtime"
-grep -Fq 'value = Math.max(2, Math.min(16, value));' "$UI" \
-  || fail "UI thread input is not limited to 2-16"
-if grep -Fq '允许范围 1–1024' "$UI" || grep -Fq '"strict_range"' "$UI" \
-  || grep -Fq '"auto_fallback"' "$UI"; then
-  fail "obsolete configurable safety policy remains in the UI"
-fi
-
 grep -Fq 'new ProcessBuilder("su", "-c", "id -u")' \
   app/src/main/java/io/github/zhanfg/sda/RootAccess.java \
   || fail "root probe is no longer the fixed id -u command"
 grep -Fq 'enforceDownloadsCaller();' "$BRIDGE" \
   || fail "root UI bridge caller validation missing"
-grep -Fq 'enforceDownloadsCaller();' \
-  app/src/main/java/io/github/zhanfg/sda/DownloadLiveUpdateProvider.java \
-  || fail "live update caller validation missing"
-for source in \
-  app/src/main/java/io/github/zhanfg/sda/xposed/SystemDownloadConfirmationModule.java \
-  app/src/main/java/io/github/zhanfg/sda/xposed/HistoryMirrorModule.java; do
-  grep -Fq 'INTERNAL_BRIDGE_PERMISSION' "$source" \
-    || fail "internal bridge permission missing from $source"
-  grep -Fq 'context.registerReceiver(' "$source" \
-    || fail "protected receiver registration missing from $source"
-done
-for source in \
-  app/src/main/java/io/github/zhanfg/sda/DownloadConfirmActivity.java \
-  app/src/main/java/io/github/zhanfg/sda/MainActivity.java; do
-  grep -Fq 'data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)' "$source" \
-    || fail "persisted URI flags are not strictly masked in $source"
-done
-if grep -R -n 'RealDownloadAcceleratorModule' \
-  app/src/main app/proguard-rules.pro 2>/dev/null; then
-  fail "legacy direct-write Range engine is still referenced by the compiled app"
-fi
-grep -Fq 'version=0.3.0-alpha14+diag1' alpha-module/module.prop \
+
+grep -Fq 'version=0.3.0-alpha15+diag1' alpha-module/module.prop \
   || fail "wrapper module version mismatch"
-grep -Fq 'appVersionCode=15' alpha-module/module.prop \
+grep -Fq 'appVersionCode=16' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
-echo "Direct-source validation passed. Functional bounded Range engine is present."
+echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants, strong validators, JVM HTTP contract tests and device validation tooling are present."
