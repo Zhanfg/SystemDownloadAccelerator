@@ -13,6 +13,10 @@ final class RangeProtocol {
             "bytes\\s*=\\s*(\\d+)-(\\d*)",
             Pattern.CASE_INSENSITIVE
     );
+    // Conservative client-side strength threshold for Last-Modified. RFC 9110 allows a client
+    // to treat a date validator as strong when the response Date is sufficiently later; keeping
+    // the historical 60-second guard also protects against coarse timestamps and clock skew.
+    private static final long STRONG_LAST_MODIFIED_GAP_MS = 60_000L;
 
     private RangeProtocol() { }
 
@@ -81,6 +85,12 @@ final class RangeProtocol {
             return "destination offset mismatch: expected " + expected + ", actual " + actual;
         }
         return null;
+    }
+
+    static boolean isStrongLastModified(long lastModifiedMillis, long responseDateMillis) {
+        if (lastModifiedMillis <= 0L || responseDateMillis <= 0L) return false;
+        if (responseDateMillis < lastModifiedMillis) return false;
+        return responseDateMillis - lastModifiedMillis >= STRONG_LAST_MODIFIED_GAP_MS;
     }
 
     static Long parseSingleRangeStart(String header) {
