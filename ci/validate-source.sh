@@ -18,6 +18,7 @@ for file in \
   app/src/main/java/io/github/zhanfg/sda/ModuleMain.java \
   app/src/main/java/io/github/zhanfg/sda/RangeProtocol.java \
   app/src/test/java/io/github/zhanfg/sda/RangeProtocolTest.java \
+  app/src/test/java/io/github/zhanfg/sda/RangeHttpContractTest.java \
   app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java \
   app/src/main/java/io/github/zhanfg/sda/RootAccess.java \
   app/src/main/resources/META-INF/xposed/java_init.list \
@@ -127,6 +128,7 @@ grep -Fq 'targetApiVersion=102' app/src/main/resources/META-INF/xposed/module.pr
 ENGINE=app/src/main/java/io/github/zhanfg/sda/ModuleMain.java
 PROTOCOL=app/src/main/java/io/github/zhanfg/sda/RangeProtocol.java
 TESTS=app/src/test/java/io/github/zhanfg/sda/RangeProtocolTest.java
+HTTP_TESTS=app/src/test/java/io/github/zhanfg/sda/RangeHttpContractTest.java
 BRIDGE=app/src/main/java/io/github/zhanfg/sda/RootUiBridgeProvider.java
 
 grep -Fq 'class ParallelRangeInputStream extends InputStream' "$ENGINE" \
@@ -188,6 +190,10 @@ grep -Fq 'destinationOffsetMustMatchResolvedResumeWindow' "$TESTS" \
   || fail "local destination offset invariant test missing"
 grep -Fq 'schedulerNeverExceedsChunksOrHardLimit' "$TESTS" \
   || fail "scheduler bound test missing"
+grep -Fq 'parallelRangesReassembleOriginalBytes' "$HTTP_TESTS" \
+  || fail "end-to-end parallel HTTP Range reconstruction test missing"
+grep -Fq 'ifRangeMismatchForcesWholeBodyResponseAndRuntimeFallback' "$HTTP_TESTS" \
+  || fail "If-Range downgrade/fallback contract test missing"
 
 grep -Fq '"report_engine_status".equals(method)' "$BRIDGE" \
   || fail "runtime Range telemetry bridge is missing"
@@ -202,4 +208,4 @@ grep -Fq 'version=0.3.0-alpha15+diag1' alpha-module/module.prop \
 grep -Fq 'appVersionCode=16' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
-echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants are present."
+echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants and JVM HTTP contract tests are present."
