@@ -1,0 +1,138 @@
+name: Build direct source
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sda-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+
+      - name: Prove checked-out source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HEAD=$(git rev-parse HEAD)"
+          git status --short
+          find app/src -name 'FirstRunSetupActivity.java' -print -exec sha256sum {} \;
+          if grep -R -n -E 'buildSignatureCard|buildStepCard' app/src/main/java; then
+            echo "Stale first-run source symbols are present in the checkout." >&2
+            exit 1
+          fi
+          git diff --exit-code
+
+      - name: Remove all project build state
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .gradle app/build build out dist alpha-diagnostics/target build-logs
+          find . -type d \( -name build -o -name .gradle \) -prune -exec rm -rf {} +
+          mkdir -p build-logs
+          git status --short
+
+      - name: Validate recovered source
+        run: bash ci/validate-source.sh
+
+      - name: Build and lint APKs from scratch
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle \
+            --no-daemon \
+            --no-build-cache \
+            --rerun-tasks \
+            --stacktrace \
+            :app:assembleDebug \
+            :app:assembleRelease \
+            :app:lintDebug \
+            2>&1 | tee build-logs/gradle.log
+
+      - name: Collect Android diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find app/build -type f \
+            \( -name 'lint-results-*.txt' \
+            -o -name 'lint-results-*.html' \
+            -o -name 'lint-results-*.xml' \
+            -o -name 'lint-results-*.sarif' \) \
+            -print -exec cp --parents {} build-logs/ \; 2>/dev/null || true
+
+      - name: Upload Gradle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemDownloadAccelerator-gradle-diagnostics
+          path: build-logs/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Set up Rust 1.86
+        shell: bash
+        run: |
+          rustup toolchain install 1.86.0 --profile minimal \
+            --target aarch64-linux-android
+          rustup default 1.86.0
+
+      - name: Package APKs and root wrapper
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          SKIP_ANDROID_BUILD: "1"
+        run: bash ci/build-module.sh
+
+      - name: Record candidate signing certificate
+        shell: bash
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs \
+            dist/SystemDownloadAccelerator-0.3.0-alpha14.apk \
+            > dist/APK-CERTIFICATES.txt
+
+      - name: Upload candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemDownloadAccelerator-0.3.0-alpha14-candidates
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

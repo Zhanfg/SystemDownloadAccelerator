@@ -1,0 +1,8 @@
+id=system_download_accelerator
+name=System Download Accelerator Alpha
+version=0.3.0-alpha14+diag1
+versionCode=1501
+appVersionCode=15
+author=Zhanfg
+maintainer=Zhanfg
+description=SystemDownloadAccelerator Alpha 14 with bounded parallel HTTP Range acceleration, an embedded LSPosed APK, and a read-only Rust one-shot diagnostic. The detector never runs persistently.

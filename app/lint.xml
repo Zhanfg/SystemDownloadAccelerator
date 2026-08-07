@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- updateNotification() performs a direct POST_NOTIFICATIONS runtime check
+         before reaching this call. Lint cannot infer the helper method contract. -->
+    <issue id="MissingPermission">
+        <ignore
+            path="src/main/java/io/github/zhanfg/sda/DownloadLiveUpdateProvider.java"
+            regexp="NotificationManagerCompat.*notify" />
+    </issue>
+
+    <!-- These one-shot setup/confirmation activities intentionally preserve their
+         existing cancel/finish semantics through the Android activity-level
+         predictive-back opt-out declared in AndroidManifest.xml. -->
+    <issue id="GestureBackNavigation">
+        <ignore path="src/main/java/io/github/zhanfg/sda/FirstRunSetupActivity.java" />
+        <ignore path="src/main/java/io/github/zhanfg/sda/SystemDownloadConfirmActivity.java" />
+    </issue>
+
+    <!-- Both callers mask result flags to READ|WRITE before persisting. Lint cannot
+         prove that the dynamic masked value satisfies the @Flags API contract. -->
+    <issue id="WrongConstant">
+        <ignore
+            path="src/main/java/io/github/zhanfg/sda/DownloadConfirmActivity.java"
+            regexp="takePersistableUriPermission" />
+        <ignore
+            path="src/main/java/io/github/zhanfg/sda/MainActivity.java"
+            regexp="takePersistableUriPermission" />
+    </issue>
+</lint>
