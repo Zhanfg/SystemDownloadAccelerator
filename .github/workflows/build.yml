@@ -66,15 +66,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .gradle app/build build out dist alpha-diagnostics/target
+          rm -rf .gradle app/build build out dist alpha-diagnostics/target build-logs
           find . -type d \( -name build -o -name .gradle \) -prune -exec rm -rf {} +
+          mkdir -p build-logs
           git status --short
 
       - name: Validate recovered source
         run: bash ci/validate-source.sh
 
       - name: Build and lint APKs from scratch
+        shell: bash
         run: |
+          set -o pipefail
           gradle \
             --no-daemon \
             --no-build-cache \
@@ -82,7 +85,17 @@ jobs:
             --stacktrace \
             :app:assembleDebug \
             :app:assembleRelease \
-            :app:lintDebug
+            :app:lintDebug \
+            2>&1 | tee build-logs/gradle.log
+
+      - name: Upload Gradle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemDownloadAccelerator-gradle-diagnostics
+          path: build-logs/gradle.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Set up Rust 1.86
         shell: bash
