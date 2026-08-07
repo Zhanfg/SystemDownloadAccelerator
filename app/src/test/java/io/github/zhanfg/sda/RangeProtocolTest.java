@@ -32,7 +32,7 @@ public final class RangeProtocolTest {
     }
 
     @Test
-    public void resumed206MustMatchOriginalRequestStart() {
+    public void resumed206MustMatchOpenEndedOriginalRequest() {
         RangeProtocol.BaseWindow ok = RangeProtocol.resolveBaseWindow(
                 206, true, "bytes=500-", "bytes 500-999/1000", 500L);
         assertTrue(ok.accepted);
@@ -43,6 +43,34 @@ public final class RangeProtocolTest {
                 206, true, "bytes=400-", "bytes 500-999/1000", 500L);
         assertFalse(mismatch.accepted);
         assertTrue(mismatch.reason.contains("offset mismatch"));
+    }
+
+    @Test
+    public void boundedResumeRequestFailsClosed() {
+        RangeProtocol.BaseWindow bounded = RangeProtocol.resolveBaseWindow(
+                206, true, "bytes=500-749", "bytes 500-749/1000", 250L);
+        assertFalse(bounded.accepted);
+        assertTrue(bounded.reason.contains("bounded"));
+    }
+
+    @Test
+    public void resumed206MustReachResourceEnd() {
+        RangeProtocol.BaseWindow partial = RangeProtocol.resolveBaseWindow(
+                206, true, "bytes=500-", "bytes 500-749/1000", 250L);
+        assertFalse(partial.accepted);
+        assertTrue(partial.reason.contains("resource end"));
+    }
+
+    @Test
+    public void resumed206ContentLengthMustMatchContentRange() {
+        RangeProtocol.BaseWindow mismatch = RangeProtocol.resolveBaseWindow(
+                206, true, "bytes=500-", "bytes 500-999/1000", 499L);
+        assertFalse(mismatch.accepted);
+        assertTrue(mismatch.reason.contains("length mismatch"));
+
+        RangeProtocol.BaseWindow unknownLength = RangeProtocol.resolveBaseWindow(
+                206, true, "bytes=500-", "bytes 500-999/1000", -1L);
+        assertTrue(unknownLength.accepted);
     }
 
     @Test
@@ -61,6 +89,25 @@ public final class RangeProtocolTest {
         assertEquals(Long.valueOf(42L), RangeProtocol.parseSingleRangeStart("bytes = 42-99"));
         assertNull(RangeProtocol.parseSingleRangeStart("bytes=99-42"));
         assertNull(RangeProtocol.parseSingleRangeStart("bytes=0-1,4-5"));
+
+        RangeProtocol.RequestRange open = RangeProtocol.parseSingleRange("bytes=42-");
+        assertNotNull(open);
+        assertTrue(open.openEnded);
+        assertNull(open.end);
+
+        RangeProtocol.RequestRange bounded = RangeProtocol.parseSingleRange("bytes=42-99");
+        assertNotNull(bounded);
+        assertFalse(bounded.openEnded);
+        assertEquals(Long.valueOf(99L), bounded.end);
+    }
+
+    @Test
+    public void destinationOffsetMustMatchResolvedResumeWindow() {
+        assertNull(RangeProtocol.validateDestinationOffset(500L, 500L));
+        assertTrue(RangeProtocol.validateDestinationOffset(500L, 400L)
+                .contains("mismatch"));
+        assertTrue(RangeProtocol.validateDestinationOffset(500L, null)
+                .contains("unavailable"));
     }
 
     @Test
@@ -70,6 +117,7 @@ public final class RangeProtocolTest {
         assertEquals(10L, range.start);
         assertEquals(19L, range.end);
         assertEquals(100L, range.total);
+        assertEquals(10L, range.length());
 
         assertNull(RangeProtocol.parseContentRange("bytes 10-100/100"));
         assertNull(RangeProtocol.parseContentRange("bytes */100"));
@@ -82,6 +130,7 @@ public final class RangeProtocolTest {
         assertEquals(4, RangeProtocol.chooseThreads(512L * mib, 4, 16, 16L * mib));
         assertEquals(2, RangeProtocol.chooseThreads(20L * mib, 8, 16, 10L * mib));
         assertEquals(16, RangeProtocol.chooseThreads(16L * 1024L * mib, 16, 16, 64L * mib));
+        assertEquals(16, RangeProtocol.chooseThreads(Long.MAX_VALUE, 16, 16, 64L * mib));
     }
 
     @Test
