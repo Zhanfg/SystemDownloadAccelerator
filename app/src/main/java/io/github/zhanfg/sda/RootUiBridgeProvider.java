@@ -4,6 +4,7 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
@@ -11,11 +12,14 @@ import android.os.Binder;
 import android.os.Bundle;
 import android.os.Process;
 
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import io.github.zhanfg.sda.ui.DownloadUiState;
 
-/** Narrow privileged bridge for launching the fixed transparent confirmation activity. */
+/** Narrow privileged bridge for confirmation UI and sanitized engine telemetry. */
 public final class RootUiBridgeProvider extends ContentProvider {
     public static final String AUTHORITY = "io.github.zhanfg.sda.rootbridge";
     public static final Uri URI = Uri.parse("content://" + AUTHORITY);
@@ -23,6 +27,10 @@ public final class RootUiBridgeProvider extends ContentProvider {
     private static final String DOWNLOADS_PACKAGE = "com.android.providers.downloads";
     private static final String ACTIVITY_COMPONENT =
             "io.github.zhanfg.sda/.SystemDownloadConfirmActivity";
+    private static final String PREFS = "module_settings";
+    private static final Set<String> ENGINE_STATES = new HashSet<>(Arrays.asList(
+            "disabled", "fallback", "active", "complete", "error"
+    ));
 
     @Override
     public boolean onCreate() {
@@ -31,9 +39,14 @@ public final class RootUiBridgeProvider extends ContentProvider {
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
+        if ("report_engine_status".equals(method)) {
+            enforceDownloadsCaller();
+            return storeEngineStatus(extras == null ? Bundle.EMPTY : extras);
+        }
         if (!"show_download_confirmation".equals(method)) {
             return super.call(method, arg, extras);
         }
+
         enforceDownloadsCaller();
         String token = arg;
         if (token == null || !token.matches("[a-fA-F0-9]{16,160}")) {
@@ -51,6 +64,33 @@ public final class RootUiBridgeProvider extends ContentProvider {
         return result;
     }
 
+    private Bundle storeEngineStatus(Bundle extras) {
+        String status = extras.getString("status", "error");
+        if (!ENGINE_STATES.contains(status)) status = "error";
+        String detail = extras.getString("detail", "");
+        if (detail == null) detail = "";
+        if (detail.length() > 256) detail = detail.substring(0, 256);
+        int threads = Math.max(0, Math.min(16, extras.getInt("threads", 0)));
+        long bytes = Math.max(0L, extras.getLong("bytes", 0L));
+        long updatedAt = System.currentTimeMillis();
+
+        SharedPreferences preferences = providerContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        preferences.edit()
+                .putString("engine_status", status)
+                .putString("engine_detail", detail)
+                .putInt("engine_threads", threads)
+                .putLong("engine_bytes", bytes)
+                .putLong("engine_updated_at", updatedAt)
+                .apply();
+
+        Bundle result = new Bundle();
+        result.putBoolean("stored", true);
+        result.putString("status", status);
+        result.putInt("threads", threads);
+        result.putLong("updated_at", updatedAt);
+        return result;
+    }
+
     private LaunchResult launchConfirmation(Context context, String token) {
         java.lang.Process process = null;
         try {
@@ -65,7 +105,7 @@ public final class RootUiBridgeProvider extends ContentProvider {
             }
             if (!finished) process.destroyForcibly();
         } catch (Throwable ignored) {
-            // Fall through to normal Activity launch. The caller must receive the actual outcome.
+            // Fall through to normal Activity launch. The caller receives the actual outcome.
         } finally {
             if (process != null) process.destroy();
         }
