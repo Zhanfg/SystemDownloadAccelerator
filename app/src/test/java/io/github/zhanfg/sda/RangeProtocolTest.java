@@ -46,11 +46,22 @@ public final class RangeProtocolTest {
     }
 
     @Test
-    public void boundedResumeRequestFailsClosed() {
-        RangeProtocol.BaseWindow bounded = RangeProtocol.resolveBaseWindow(
+    public void boundedResumeRequestIsAcceptedOnlyWhenItReachesEof() {
+        RangeProtocol.BaseWindow fullTail = RangeProtocol.resolveBaseWindow(
+                206, true, "bytes=500-999", "bytes 500-999/1000", 500L);
+        assertTrue(fullTail.accepted);
+        assertEquals(500L, fullTail.current);
+        assertEquals(1000L, fullTail.total);
+
+        RangeProtocol.BaseWindow middleWindow = RangeProtocol.resolveBaseWindow(
                 206, true, "bytes=500-749", "bytes 500-749/1000", 250L);
-        assertFalse(bounded.accepted);
-        assertTrue(bounded.reason.contains("bounded"));
+        assertFalse(middleWindow.accepted);
+        assertTrue(middleWindow.reason.contains("resource end"));
+
+        RangeProtocol.BaseWindow responseMismatch = RangeProtocol.resolveBaseWindow(
+                206, true, "bytes=500-999", "bytes 500-899/1000", 400L);
+        assertFalse(responseMismatch.accepted);
+        assertTrue(responseMismatch.reason.contains("response mismatch"));
     }
 
     @Test
