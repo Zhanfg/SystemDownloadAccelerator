@@ -85,6 +85,35 @@ public final class RangeProtocolTest {
     }
 
     @Test
+    public void spoolPlanCapsWindowAtIndependentByteBudget() {
+        long mib = 1024L * 1024L;
+        long budget = 512L * mib;
+
+        RangeProtocol.SpoolPlan extreme = RangeProtocol.planSpool(
+                256, 16, 64L * mib, budget);
+        assertTrue(extreme.accepted);
+        assertEquals(8, extreme.workers);
+        assertEquals(8, extreme.windowChunks);
+        assertEquals(512L * mib, extreme.windowBytes);
+
+        RangeProtocol.SpoolPlan normal = RangeProtocol.planSpool(
+                64, 4, 16L * mib, budget);
+        assertTrue(normal.accepted);
+        assertEquals(4, normal.workers);
+        assertEquals(8, normal.windowChunks);
+        assertEquals(128L * mib, normal.windowBytes);
+    }
+
+    @Test
+    public void spoolPlanFailsWhenBudgetCannotHoldParallelism() {
+        long mib = 1024L * 1024L;
+        RangeProtocol.SpoolPlan plan = RangeProtocol.planSpool(
+                8, 8, 64L * mib, 64L * mib);
+        assertFalse(plan.accepted);
+        assertTrue(plan.reason.contains("two chunks"));
+    }
+
+    @Test
     public void chunkBoundsAreContiguousAndClamped() {
         RangeProtocol.ChunkBounds first = RangeProtocol.chunkBounds(100L, 350L, 100L, 0);
         RangeProtocol.ChunkBounds second = RangeProtocol.chunkBounds(100L, 350L, 100L, 1);
