@@ -13,6 +13,7 @@ for file in \
   build.gradle.kts \
   settings.gradle.kts \
   app/build.gradle.kts \
+  app/lint.xml \
   app/src/main/AndroidManifest.xml \
   app/src/main/java/io/github/zhanfg/sda/ModuleMain.java \
   app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java \
@@ -73,6 +74,17 @@ if application.attrib.get(ns + 'name') != '.SafetyMigrationApplication':
 if application.attrib.get(ns + 'allowBackup') != 'false':
     raise SystemExit('download history must not be included in Android backup')
 
+activities = {
+    item.attrib.get(ns + 'name'): item
+    for item in application.findall('activity')
+}
+for name in ('.FirstRunSetupActivity', '.SystemDownloadConfirmActivity'):
+    item = activities.get(name)
+    if item is None:
+        raise SystemExit(f'required one-shot activity missing: {name}')
+    if item.attrib.get(ns + 'enableOnBackInvokedCallback') != 'false':
+        raise SystemExit(f'{name} must retain the documented predictive-back opt-out')
+
 expected_providers = {
     '.HistoryProvider',
     '.RootUiBridgeProvider',
@@ -108,6 +120,11 @@ if entries != expected_entries:
     raise SystemExit(f'unsafe or unexpected libxposed entry list: {entries}')
 if any('RealDownloadAcceleratorModule' in item for item in entries):
     raise SystemExit('unvalidated Range engine must not be loaded')
+
+lint_root = ET.parse('app/lint.xml').getroot()
+issues = {item.attrib.get('id'): item for item in lint_root.findall('issue')}
+if 'GestureBackNavigation' not in issues or 'WrongConstant' not in issues:
+    raise SystemExit('documented compatibility lint scopes are missing')
 PY
 
 grep -Fq 'versionName = "0.3.0-alpha13"' app/build.gradle.kts \
@@ -139,6 +156,12 @@ for source in \
     || fail "internal bridge permission missing from $source"
   grep -Fq 'context.registerReceiver(' "$source" \
     || fail "protected receiver registration missing from $source"
+done
+for source in \
+  app/src/main/java/io/github/zhanfg/sda/DownloadConfirmActivity.java \
+  app/src/main/java/io/github/zhanfg/sda/MainActivity.java; do
+  grep -Fq 'data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)' "$source" \
+    || fail "persisted URI flags are not strictly masked in $source"
 done
 if grep -R -n 'RealDownloadAcceleratorModule' \
   app/src/main app/proguard-rules.pro 2>/dev/null; then
