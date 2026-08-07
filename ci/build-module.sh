@@ -27,6 +27,36 @@ APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
 "$APKSIGNER" verify --verbose "$DEBUG_APK"
 "$APKSIGNER" verify --verbose "$RELEASE_APK"
 
+verify_xposed_metadata() {
+  local apk="$1"
+  local actual expected
+
+  expected="$(printf '%s\n' \
+    'io.github.zhanfg.sda.ModuleMain' \
+    'io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule' \
+    'io.github.zhanfg.sda.xposed.HistoryMirrorModule')"
+  actual="$(unzip -p "$apk" META-INF/xposed/java_init.list | tr -d '\r')"
+  [ "$actual" = "$expected" ] || {
+    echo "Unsafe libxposed entry list in $apk" >&2
+    printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual" >&2
+    exit 1
+  }
+
+  actual="$(unzip -p "$apk" META-INF/xposed/scope.list | tr -d '\r' | sed '/^[[:space:]]*$/d')"
+  [ "$actual" = 'com.android.providers.downloads' ] || {
+    echo "Unsafe LSPosed scope in $apk: $actual" >&2
+    exit 1
+  }
+
+  unzip -p "$apk" META-INF/xposed/module.prop | tr -d '\r' \
+    | grep -qx 'minApiVersion=102'
+  unzip -p "$apk" META-INF/xposed/module.prop | tr -d '\r' \
+    | grep -qx 'targetApiVersion=102'
+}
+
+verify_xposed_metadata "$DEBUG_APK"
+verify_xposed_metadata "$RELEASE_APK"
+
 if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
   echo "ANDROID_NDK_HOME or ANDROID_NDK_ROOT must point to an Android NDK" >&2
   exit 1
@@ -114,6 +144,14 @@ unzip -Z1 "$MODULE_ZIP" | grep -qx 'module.prop'
 unzip -Z1 "$MODULE_ZIP" | grep -qx 'action.sh'
 unzip -Z1 "$MODULE_ZIP" | grep -qx 'bin/sda-alpha-detect'
 unzip -Z1 "$MODULE_ZIP" | grep -qx 'apk/SystemDownloadAccelerator.apk'
+
+TMP_EMBEDDED="$ROOT/out/embedded-release.apk"
+unzip -p "$MODULE_ZIP" apk/SystemDownloadAccelerator.apk > "$TMP_EMBEDDED"
+cmp -s "$RELEASE_APK" "$TMP_EMBEDDED" || {
+  echo "Embedded module APK differs from the verified release APK" >&2
+  exit 1
+}
+verify_xposed_metadata "$TMP_EMBEDDED"
 
 (
   cd "$DIST"

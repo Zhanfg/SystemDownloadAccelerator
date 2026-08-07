@@ -32,6 +32,8 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
     private static final String TARGET_PACKAGE = "com.android.providers.downloads";
     private static final String ACTION_DECISION =
             "io.github.zhanfg.sda.action.SYSTEM_DOWNLOAD_DECISION";
+    private static final String INTERNAL_BRIDGE_PERMISSION =
+            "io.github.zhanfg.sda.permission.INTERNAL_BRIDGE";
     private static final Uri ROOT_BRIDGE_URI =
             Uri.parse("content://io.github.zhanfg.sda.rootbridge");
     private static final long FAILSAFE_RESUME_MS = 120_000L;
@@ -168,11 +170,13 @@ public final class SystemDownloadConfirmationModule extends XposedModule {
             }
         };
         IntentFilter filter = new IntentFilter(ACTION_DECISION);
-        if (Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
-        } else {
-            context.registerReceiver(receiver, filter);
-        }
+        context.registerReceiver(
+                receiver,
+                filter,
+                INTERNAL_BRIDGE_PERMISSION,
+                null,
+                Build.VERSION.SDK_INT >= 33 ? Context.RECEIVER_EXPORTED : 0
+        );
     }
 
     private void applyDecision(PendingDownload pending, int decision) {

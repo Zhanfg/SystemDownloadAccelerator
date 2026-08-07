@@ -32,6 +32,8 @@ public final class HistoryMirrorModule extends XposedModule {
             Uri.parse("content://io.github.zhanfg.sda.liveupdate");
     private static final String ACTION_CONTROL =
             "io.github.zhanfg.sda.action.DOWNLOAD_CONTROL";
+    private static final String INTERNAL_BRIDGE_PERMISSION =
+            "io.github.zhanfg.sda.permission.INTERNAL_BRIDGE";
     private static final AtomicBoolean CONTROL_RECEIVER_REGISTERED = new AtomicBoolean(false);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
@@ -156,11 +158,13 @@ public final class HistoryMirrorModule extends XposedModule {
             }
         };
         IntentFilter filter = new IntentFilter(ACTION_CONTROL);
-        if (Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
-        } else {
-            context.registerReceiver(receiver, filter);
-        }
+        context.registerReceiver(
+                receiver,
+                filter,
+                INTERNAL_BRIDGE_PERMISSION,
+                null,
+                Build.VERSION.SDK_INT >= 33 ? Context.RECEIVER_EXPORTED : 0
+        );
     }
 
     private static void verifyAndRepair(ContentProvider provider, Method update, Uri uri) {

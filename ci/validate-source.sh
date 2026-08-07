@@ -44,6 +44,7 @@ root = ET.parse(manifest).getroot()
 ns = '{http://schemas.android.com/apk/res/android}'
 permissions = {item.attrib[ns + 'name'] for item in root.findall('uses-permission')}
 required = {
+    'io.github.zhanfg.sda.permission.INTERNAL_BRIDGE',
     'android.permission.INTERNET',
     'android.permission.POST_NOTIFICATIONS',
     'android.permission.POST_PROMOTED_NOTIFICATIONS',
@@ -54,6 +55,13 @@ if missing:
     raise SystemExit(f'missing permissions: {sorted(missing)}')
 if 'android.permission.REQUEST_INSTALL_PACKAGES' in permissions:
     raise SystemExit('unused REQUEST_INSTALL_PACKAGES permission is forbidden')
+
+declared = {
+    item.attrib[ns + 'name']: item.attrib.get(ns + 'protectionLevel')
+    for item in root.findall('permission')
+}
+if declared.get('io.github.zhanfg.sda.permission.INTERNAL_BRIDGE') != 'signature':
+    raise SystemExit('internal bridge permission must be signature protected')
 
 application = root.find('application')
 if application is None:
@@ -122,6 +130,14 @@ grep -Fq 'enforceDownloadsCaller();' \
 grep -Fq 'enforceDownloadsCaller();' \
   app/src/main/java/io/github/zhanfg/sda/DownloadLiveUpdateProvider.java \
   || fail "live update caller validation missing"
+for source in \
+  app/src/main/java/io/github/zhanfg/sda/xposed/SystemDownloadConfirmationModule.java \
+  app/src/main/java/io/github/zhanfg/sda/xposed/HistoryMirrorModule.java; do
+  grep -Fq 'INTERNAL_BRIDGE_PERMISSION' "$source" \
+    || fail "internal bridge permission missing from $source"
+  grep -Fq 'context.registerReceiver(' "$source" \
+    || fail "protected receiver registration missing from $source"
+done
 grep -Fq 'appVersionCode=14' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
