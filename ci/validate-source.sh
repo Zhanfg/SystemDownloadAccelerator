@@ -24,6 +24,8 @@ for file in \
   [ -s "$file" ] || fail "required file missing: $file"
 done
 
+[ ! -e app/src/main/java/io/github/zhanfg/sda/xposed/RealDownloadAcceleratorModule.java ] \
+  || fail "unvalidated Range engine must remain outside the compiled source tree"
 [ ! -d .bootstrap ] || fail "encoded bootstrap directory must not return"
 if find . -maxdepth 1 -type f -name '.ci-*' -print -quit | grep -q .; then
   fail "temporary CI trigger files must not be committed"
@@ -138,6 +140,10 @@ for source in \
   grep -Fq 'context.registerReceiver(' "$source" \
     || fail "protected receiver registration missing from $source"
 done
+if grep -R -n 'RealDownloadAcceleratorModule' \
+  app/src/main app/proguard-rules.pro 2>/dev/null; then
+  fail "quarantined Range engine is still referenced by the compiled app"
+fi
 grep -Fq 'appVersionCode=14' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 

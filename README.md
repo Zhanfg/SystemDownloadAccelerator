@@ -15,7 +15,7 @@
 
 Alpha 13 的实际 libxposed 入口固定为安全透传 `ModuleMain`：识别到 ColorOS 的 `u(HttpURLConnection)` 后，完整执行系统原始传输并原样返回结果。
 
-仓库仍保留实验性 `RealDownloadAcceleratorModule` 源码供后续审查，但它**不在 `java_init.list` 中，不会被加载**。升级到 Alpha 13 时，应用还会把旧版本遗留的 `enabled=true` 设置重置为关闭。界面中的多线程配置暂时属于预留项；在真实 Range 引擎通过设备级完整性测试前，本版本不能宣称提供稳定的多线程加速。
+历史 Alpha 中的实验性并发 Range 写入引擎已从编译源码树隔离，只保留在 Git 历史和恢复分支中，不会进入 APK。升级到 Alpha 13 时，应用还会把旧版本遗留的 `enabled=true` 设置重置为关闭。界面中的多线程配置暂时属于预留项；在新实现通过设备级完整性测试前，本版本不能宣称提供稳定的多线程加速。
 
 以下内容仍需 Android 16 / ColorOS 真机验证：
 
@@ -54,24 +54,26 @@ bash ci/build-module.sh
 SystemDownloadAccelerator-0.3.0-alpha13-debug.apk
 SystemDownloadAccelerator-0.3.0-alpha13.apk
 SystemDownloadAccelerator-0.3.0-alpha13-module.zip
+APK-CERTIFICATES.txt
 SHA256SUMS.txt
 ```
 
-Alpha Release APK 使用调试签名，只用于测试和升级链验证。正式发布必须切换到受保护且固定的发布签名。
+Alpha Release APK 使用 CI 调试签名，只用于测试和升级链验证。`APK-CERTIFICATES.txt` 记录当前候选证书指纹；不同构建之间不保证签名连续。正式可覆盖升级的发布版必须切换到受保护且固定的发布签名。
 
 ## 安装
 
 常规 LSPosed 测试：安装 APK，在 LSPosed 中只勾选系统下载提供程序，然后重启目标进程或设备。
 
-Root 包装模块：从 Magisk、KernelSU 或 APatch 管理器安装模块 ZIP。模块只在已安装 APK 的版本低于嵌入版本时执行升级，不会降级同版或更高版本；应用数据会保留。
+Root 包装模块：从 Magisk、KernelSU 或 APatch 管理器安装模块 ZIP。签名一致时，模块只升级版本号更低的 APK，不降级同版或更高版本，并保留应用数据。若设备上的旧 APK 使用不同签名，模块记录 `signature-mismatch` 并保留原应用，不会自动卸载或清除数据。
 
 ## 安全设计
 
 - Root 探测固定执行 `su -c "id -u"`，不接受外部命令。
 - 三个导出的 Provider 都在代码中验证调用 UID。
+- 下载确认与通知控制广播同时使用签名级权限和随机令牌。
 - 确认令牌使用受限格式和一次性状态。
 - 下载历史、源 URL 与本地路径不参与 Android 备份。
-- 未验证的 Range 引擎不进入实际加载清单。
+- 未验证的 Range 引擎不进入编译源码树或实际加载清单。
 - Rust 诊断器仅由模块 Action 手动运行，不驻留后台。
 
 ## 源码恢复

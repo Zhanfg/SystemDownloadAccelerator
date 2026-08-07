@@ -69,6 +69,13 @@ jobs:
           SKIP_ANDROID_BUILD: "1"
         run: bash ci/build-module.sh
 
+      - name: Record candidate signing certificate
+        shell: bash
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs \
+            dist/SystemDownloadAccelerator-0.3.0-alpha13.apk \
+            > dist/APK-CERTIFICATES.txt
+
       - name: Upload candidates
         uses: actions/upload-artifact@v4
         with:

@@ -25,6 +25,17 @@ write_state() {
   chmod 0600 "$STATE_FILE"
 }
 
+is_signature_error() {
+  case "$1" in
+    *INSTALL_FAILED_UPDATE_INCOMPATIBLE*|*INSTALL_FAILED_SHARED_USER_INCOMPATIBLE*|*signatures\ do\ not\ match*|*signature*incompatible*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 COUNT=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$COUNT" -lt 180 ]; do
   sleep 2
@@ -65,6 +76,12 @@ fi
 
 RESULT="$(pm install --user 0 -r "$APK" 2>&1)"
 CODE=$?
+if [ "$CODE" -ne 0 ] && is_signature_error "$RESULT"; then
+  log_line "embedded APK signature does not match installed package: $RESULT"
+  write_state signature-mismatch "${INSTALLED_CODE:-unknown}" "$EMBEDDED_CODE" "$RESULT"
+  exit 0
+fi
+
 if [ "$CODE" -ne 0 ]; then
   log_line "user-scoped install/update failed: $RESULT"
   RESULT="$(pm install -r "$APK" 2>&1)"
@@ -79,8 +96,12 @@ if [ "$CODE" -eq 0 ]; then
   fi
   log_line "embedded APK $STATUS: $RESULT"
 else
-  STATUS=install-failed
-  log_line "embedded APK install/update failed: $RESULT"
+  if is_signature_error "$RESULT"; then
+    STATUS=signature-mismatch
+  else
+    STATUS=install-failed
+  fi
+  log_line "embedded APK install/update failed ($STATUS): $RESULT"
 fi
 
 write_state "$STATUS" "${INSTALLED_CODE:-none}" "$EMBEDDED_CODE" "$RESULT"

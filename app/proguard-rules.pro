@@ -12,8 +12,6 @@
 -keep class io.github.zhanfg.sda.HistoryProvider { public *; }
 -keep class io.github.zhanfg.sda.RootUiBridgeProvider { public *; }
 -keep class io.github.zhanfg.sda.ui.** { *; }
--keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule { public *; }
--keep class io.github.zhanfg.sda.xposed.RealDownloadAcceleratorModule$* { *; }
 -keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule { public *; }
 -keep class io.github.zhanfg.sda.xposed.SystemDownloadConfirmationModule$* { *; }
 -keep class io.github.zhanfg.sda.xposed.HistoryMirrorModule { public *; }
