@@ -21,7 +21,6 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -55,6 +54,7 @@ public final class ModuleMain extends XposedModule {
             "com.android.providers.downloads.e"
     };
     private static final String STATUS_URI = "content://io.github.zhanfg.sda.rootbridge";
+    private static final long MAX_SPOOL_WINDOW_BYTES = 512L * 1024L * 1024L;
 
     private static final ThreadLocal<ActiveTransfer> ACTIVE_TRANSFER = new ThreadLocal<>();
     private static final Map<Object, ParallelRangeInputStream> ACTIVE_SESSIONS =
@@ -121,8 +121,11 @@ public final class ModuleMain extends XposedModule {
                 .intercept(chain -> {
                     ActiveTransfer previous = ACTIVE_TRANSFER.get();
                     HttpURLConnection connection = (HttpURLConnection) chain.getArg(0);
-                    RequestSnapshot snapshot = REQUEST_SNAPSHOTS.remove(connection);
-                    if (snapshot == null) snapshot = RequestSnapshot.capture(connection);
+                    RequestSnapshot configured = REQUEST_SNAPSHOTS.remove(connection);
+                    RequestSnapshot latest = RequestSnapshot.capture(connection);
+                    RequestSnapshot snapshot = latest.known
+                            ? latest
+                            : (configured != null ? configured : latest);
                     ACTIVE_TRANSFER.set(new ActiveTransfer(
                             chain.getThisObject(), connection, configureMethod, snapshot));
                     try {
@@ -688,8 +691,14 @@ public final class ModuleMain extends XposedModule {
                 throw new IOException("invalid chunk count: " + count);
             }
             this.chunkCount = (int) count;
-            this.workerCount = Math.max(2, Math.min(preflight.threads, chunkCount));
-            this.windowSize = Math.min(chunkCount, Math.max(workerCount + 1, workerCount * 2));
+
+            RangeProtocol.SpoolPlan spoolPlan = RangeProtocol.planSpool(
+                    chunkCount, preflight.threads, chunkSize, MAX_SPOOL_WINDOW_BYTES);
+            if (!spoolPlan.accepted) {
+                throw new IOException("unsafe spool plan: " + spoolPlan.reason);
+            }
+            this.workerCount = spoolPlan.workers;
+            this.windowSize = spoolPlan.windowChunks;
 
             Context context = findContext(owner);
             if (context == null || context.getCacheDir() == null) {
@@ -699,7 +708,7 @@ public final class ModuleMain extends XposedModule {
             if (!root.exists() && !root.mkdirs()) throw new IOException("private spool root unavailable");
             cleanupStaleSpool(root);
 
-            long spoolBudget = Math.min(preflight.remaining, chunkSize * (long) windowSize);
+            long spoolBudget = Math.min(preflight.remaining, spoolPlan.windowBytes);
             long reserve = 64L * 1024L * 1024L;
             long usable = root.getUsableSpace();
             if (usable > 0L && usable < spoolBudget + reserve) {
