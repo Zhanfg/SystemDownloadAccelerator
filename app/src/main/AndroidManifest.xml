@@ -49,6 +49,7 @@
         <activity
             android:name=".SystemDownloadConfirmActivity"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density|uiMode"
+            android:enableOnBackInvokedCallback="false"
             android:excludeFromRecents="true"
             android:exported="true"
             android:finishOnTaskLaunch="true"
@@ -60,6 +61,7 @@
 
         <activity
             android:name=".FirstRunSetupActivity"
+            android:enableOnBackInvokedCallback="false"
             android:exported="false"
             android:resizeableActivity="true"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
