@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.Network;
 import android.os.Bundle;
+import android.system.Os;
+import android.system.OsConstants;
 import android.util.Log;
 
 import java.io.EOFException;
@@ -42,9 +44,9 @@ import io.github.libxposed.api.XposedModule;
  *
  * <p>Parallel workers only write private temporary chunks. The original vendor copy method remains
  * the sole writer to the DownloadProvider-owned destination descriptor. Acceleration is enabled
- * only when the original request Range state, server response window, resource validator and a
- * strict 206 probe all agree. Any uncertainty before accelerated bytes are exposed falls back to
- * the system input stream.</p>
+ * only when the original request Range state, server response window, local destination offset,
+ * resource validator and a strict 206 probe all agree. Any uncertainty before accelerated bytes
+ * are exposed falls back to the system input stream.</p>
  */
 public final class ModuleMain extends XposedModule {
     private static final String TAG = "SysDownloadAccel";
@@ -61,6 +63,8 @@ public final class ModuleMain extends XposedModule {
             Collections.synchronizedMap(new WeakHashMap<>());
     private static final Map<HttpURLConnection, RequestSnapshot> REQUEST_SNAPSHOTS =
             Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Set<File> ACTIVE_SPOOL_DIRS =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
@@ -191,7 +195,7 @@ public final class ModuleMain extends XposedModule {
 
         Preflight preflight;
         try {
-            preflight = Preflight.inspect(owner, active, settings);
+            preflight = Preflight.inspect(owner, active, settings, descriptor);
         } catch (Throwable error) {
             log(Log.WARN, TAG, "Preflight error; using system transfer", error);
             report(owner, "fallback", "preflight error: " + error.getClass().getSimpleName(), 0, 0);
@@ -358,6 +362,15 @@ public final class ModuleMain extends XposedModule {
         return null;
     }
 
+    private static Long descriptorOffset(FileDescriptor descriptor) {
+        if (descriptor == null || !descriptor.valid()) return null;
+        try {
+            return Os.lseek(descriptor, 0L, OsConstants.SEEK_CUR);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private static void cleanupStaleSpool(File root) {
         try {
             File[] files = root.listFiles();
@@ -365,6 +378,8 @@ public final class ModuleMain extends XposedModule {
             long cutoff = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(6);
             for (File file : files) {
                 if (!file.isDirectory() || !file.getName().startsWith("sda-range-")) continue;
+                File absolute = file.getAbsoluteFile();
+                if (ACTIVE_SPOOL_DIRS.contains(absolute)) continue;
                 if (file.lastModified() >= cutoff) continue;
                 deleteRecursively(file);
             }
@@ -499,8 +514,8 @@ public final class ModuleMain extends XposedModule {
             this.threads = threads;
         }
 
-        static Preflight inspect(Object owner, ActiveTransfer active, Settings settings)
-                throws Exception {
+        static Preflight inspect(Object owner, ActiveTransfer active, Settings settings,
+                                 FileDescriptor descriptor) throws Exception {
             HttpURLConnection base = active.connection;
             if (!"GET".equalsIgnoreCase(base.getRequestMethod())) {
                 return reject(owner, active, "non-GET transfer");
@@ -519,6 +534,12 @@ public final class ModuleMain extends XposedModule {
                     base.getContentLengthLong());
             if (!baseWindow.accepted) {
                 return reject(owner, active, baseWindow.reason);
+            }
+
+            String offsetIssue = RangeProtocol.validateDestinationOffset(
+                    baseWindow.current, descriptorOffset(descriptor));
+            if (offsetIssue != null) {
+                return reject(owner, active, offsetIssue);
             }
 
             long current = baseWindow.current;
@@ -686,7 +707,12 @@ public final class ModuleMain extends XposedModule {
             this.preflight = preflight;
             this.settings = settings;
             this.chunkSize = settings.chunkSize;
-            long count = (preflight.remaining + chunkSize - 1L) / chunkSize;
+            long count;
+            try {
+                count = Math.addExact(preflight.remaining, chunkSize - 1L) / chunkSize;
+            } catch (ArithmeticException overflow) {
+                throw new IOException("Range chunk count overflow", overflow);
+            }
             if (count <= 0L || count > Integer.MAX_VALUE) {
                 throw new IOException("invalid chunk count: " + count);
             }
@@ -715,15 +741,23 @@ public final class ModuleMain extends XposedModule {
                 throw new IOException("insufficient temporary storage for bounded Range spool");
             }
             this.sessionDir = new File(root,
-                    "sda-range-" + android.os.Process.myPid() + "-" + System.nanoTime());
+                    "sda-range-" + android.os.Process.myPid() + "-" + System.nanoTime())
+                    .getAbsoluteFile();
             if (!sessionDir.mkdirs()) throw new IOException("unable to create Range spool");
+            ACTIVE_SPOOL_DIRS.add(sessionDir);
 
-            this.executor = Executors.newFixedThreadPool(workerCount, runnable -> {
-                Thread thread = new Thread(runnable, "SDA-range-worker");
-                thread.setDaemon(true);
-                return thread;
-            });
-            scheduleWindow();
+            try {
+                this.executor = Executors.newFixedThreadPool(workerCount, runnable -> {
+                    Thread thread = new Thread(runnable, "SDA-range-worker");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+                scheduleWindow();
+            } catch (RuntimeException | Error failure) {
+                ACTIVE_SPOOL_DIRS.remove(sessionDir);
+                deleteRecursively(sessionDir);
+                throw failure;
+            }
         }
 
         int workerCount() {
@@ -907,6 +941,7 @@ public final class ModuleMain extends XposedModule {
             awaitWorkers();
             closeQuietly(currentInput);
             currentInput = null;
+            ACTIVE_SPOOL_DIRS.remove(sessionDir);
             deleteRecursively(sessionDir);
         }
 
@@ -919,6 +954,7 @@ public final class ModuleMain extends XposedModule {
             awaitWorkers();
             closeQuietly(currentInput);
             currentInput = null;
+            ACTIVE_SPOOL_DIRS.remove(sessionDir);
             deleteRecursively(sessionDir);
         }
 
