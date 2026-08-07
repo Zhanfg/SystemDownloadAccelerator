@@ -14,52 +14,73 @@ log_line() {
   echo "$(date '+%F %T %z') $*" >> "$LOG_FILE"
 }
 
-# Wait for Android's package service. The detector itself is never started here.
+write_state() {
+  {
+    echo "status=$1"
+    echo "timestamp=$(date '+%s')"
+    echo "installed_version_code=${2:-unknown}"
+    echo "embedded_version_code=${3:-unknown}"
+    [ -n "${4:-}" ] && echo "result=$4"
+  } > "$STATE_FILE"
+  chmod 0600 "$STATE_FILE"
+}
+
 COUNT=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$COUNT" -lt 180 ]; do
   sleep 2
   COUNT=$((COUNT + 1))
 done
 
-if pm path "$PACKAGE" >/dev/null 2>&1; then
-  log_line "package already installed; preserving existing APK and app data"
-  {
-    echo "status=already-installed"
-    echo "timestamp=$(date '+%s')"
-  } > "$STATE_FILE"
-  chmod 0600 "$STATE_FILE"
-  exit 0
-fi
-
 if [ ! -s "$APK" ]; then
   log_line "embedded APK missing"
-  {
-    echo "status=embedded-apk-missing"
-    echo "timestamp=$(date '+%s')"
-  } > "$STATE_FILE"
-  chmod 0600 "$STATE_FILE"
+  write_state embedded-apk-missing
   exit 0
 fi
 
-RESULT="$(pm install -r -d --user 0 "$APK" 2>&1)"
+EMBEDDED_CODE="$(sed -n 's/^appVersionCode=//p' "$MODDIR/module.prop" | head -n 1)"
+case "$EMBEDDED_CODE" in
+  ''|*[!0-9]*)
+    log_line "invalid embedded appVersionCode: $EMBEDDED_CODE"
+    write_state invalid-embedded-version unknown "$EMBEDDED_CODE"
+    exit 0
+    ;;
+esac
+
+INSTALLED_CODE=""
+if pm path "$PACKAGE" >/dev/null 2>&1; then
+  INSTALLED_CODE="$(dumpsys package "$PACKAGE" 2>/dev/null \
+    | sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' \
+    | head -n 1)"
+fi
+
+case "$INSTALLED_CODE" in
+  *[!0-9]*) INSTALLED_CODE="" ;;
+esac
+
+if [ -n "$INSTALLED_CODE" ] && [ "$INSTALLED_CODE" -ge "$EMBEDDED_CODE" ]; then
+  log_line "installed APK is current or newer: installed=$INSTALLED_CODE embedded=$EMBEDDED_CODE"
+  write_state up-to-date "$INSTALLED_CODE" "$EMBEDDED_CODE"
+  exit 0
+fi
+
+RESULT="$(pm install --user 0 -r "$APK" 2>&1)"
 CODE=$?
 if [ "$CODE" -ne 0 ]; then
-  log_line "user-scoped install failed: $RESULT"
-  RESULT="$(pm install -r -d "$APK" 2>&1)"
+  log_line "user-scoped install/update failed: $RESULT"
+  RESULT="$(pm install -r "$APK" 2>&1)"
   CODE=$?
 fi
 
 if [ "$CODE" -eq 0 ]; then
-  log_line "embedded Alpha APK installed: $RESULT"
-  STATUS=installed
+  if [ -n "$INSTALLED_CODE" ]; then
+    STATUS=updated
+  else
+    STATUS=installed
+  fi
+  log_line "embedded APK $STATUS: $RESULT"
 else
-  log_line "embedded Alpha APK install failed: $RESULT"
   STATUS=install-failed
+  log_line "embedded APK install/update failed: $RESULT"
 fi
 
-{
-  echo "status=$STATUS"
-  echo "timestamp=$(date '+%s')"
-  echo "result=$RESULT"
-} > "$STATE_FILE"
-chmod 0600 "$STATE_FILE"
+write_state "$STATUS" "${INSTALLED_CODE:-none}" "$EMBEDDED_CODE" "$RESULT"

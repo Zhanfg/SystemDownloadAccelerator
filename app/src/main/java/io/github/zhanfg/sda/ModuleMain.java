@@ -31,7 +31,10 @@ public class ModuleMain extends XposedModule {
             for (Method method : target.getDeclaredMethods()) {
                 if (!"u".equals(method.getName())) continue;
                 Class<?>[] parameters = method.getParameterTypes();
-                if (parameters.length != 1 || !HttpURLConnection.class.isAssignableFrom(parameters[0])) continue;
+                if (parameters.length != 1
+                        || !HttpURLConnection.class.isAssignableFrom(parameters[0])) {
+                    continue;
+                }
                 String signature = className + "#" + method.toGenericString();
                 synchronized (hooked) {
                     if (!hooked.add(signature)) return;
@@ -39,17 +42,16 @@ public class ModuleMain extends XposedModule {
                 method.setAccessible(true);
                 hook(method).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     log(Log.INFO, TAG, "Download transfer intercepted: " + className + ".u");
-                    // Alpha safety mode: preserve the original ColorOS DownloadProvider transfer.
-                    // The ranged coordinator will replace this branch after device-side validation.
-                    chain.proceed();
-                    return null;
+                    // Alpha safety mode: preserve both the original execution and return value.
+                    // A ranged-transfer coordinator must not replace this path until device tests pass.
+                    return chain.proceed();
                 });
                 log(Log.INFO, TAG, "Hook installed: " + signature);
                 return;
             }
             log(Log.WARN, TAG, "Compatible transfer method not found in " + className);
-        } catch (Throwable t) {
-            log(Log.ERROR, TAG, "Hook failed for " + className, t);
+        } catch (Throwable error) {
+            log(Log.ERROR, TAG, "Hook failed for " + className, error);
         }
     }
 }

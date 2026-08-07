@@ -1,0 +1,78 @@
+name: Build direct source
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sda-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+
+      - name: Validate recovered source
+        run: bash ci/validate-source.sh
+
+      - name: Build and lint APKs
+        run: |
+          gradle --no-daemon --stacktrace \
+            :app:assembleDebug \
+            :app:assembleRelease \
+            :app:lintDebug
+
+      - name: Set up Rust 1.86
+        shell: bash
+        run: |
+          rustup toolchain install 1.86.0 --profile minimal \
+            --target aarch64-linux-android
+          rustup default 1.86.0
+
+      - name: Package APKs and root wrapper
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          SKIP_ANDROID_BUILD: "1"
+        run: bash ci/build-module.sh
+
+      - name: Upload candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemDownloadAccelerator-0.3.0-alpha13-candidates
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

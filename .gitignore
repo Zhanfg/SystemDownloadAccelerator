@@ -2,5 +2,10 @@
 .idea/
 local.properties
 **/build/
+alpha-diagnostics/target/
+dist/
+out/
+*.apk
+*.aab
 *.iml
 .DS_Store

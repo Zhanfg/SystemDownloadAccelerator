@@ -1,7 +1,8 @@
 #!/system/bin/sh
 
-ui_print "- System Download Accelerator Alpha 12"
-ui_print "- Includes the original LSPosed APK"
+ui_print "- System Download Accelerator Alpha 13"
+ui_print "- Includes the LSPosed API 102 APK"
+ui_print "- Existing app data is preserved during upgrades"
 ui_print "- Action runs one read-only Rust diagnostic"
 ui_print "- No persistent diagnostic service is installed"
 
