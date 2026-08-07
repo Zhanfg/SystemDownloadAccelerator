@@ -159,6 +159,8 @@ grep -Fq 'RangeProtocol.validateDestinationOffset' "$ENGINE" \
   || fail "local destination offset is not part of Range preflight"
 grep -Fq 'Os.lseek(descriptor, 0L, OsConstants.SEEK_CUR)' "$ENGINE" \
   || fail "destination FD offset is not measured with lseek"
+grep -Fq 'RangeProtocol.isStrongLastModified(modifiedMillis, responseDateMillis)' "$ENGINE" \
+  || fail "runtime can use weak Last-Modified as If-Range validator"
 grep -Fq 'RangeProtocol.chunkBounds' "$ENGINE" \
   || fail "tested chunk geometry is not used by runtime"
 grep -Fq 'boolean enabled = false;' "$ENGINE" \
@@ -181,6 +183,8 @@ if grep -Fq 'Os.pwrite' "$ENGINE" || grep -Fq 'FileChannel positional write' "$E
   fail "destination direct-write code must not exist in the active engine"
 fi
 
+grep -Fq 'STRONG_LAST_MODIFIED_GAP_MS = 60_000L' "$PROTOCOL" \
+  || fail "conservative strong Last-Modified threshold missing"
 grep -Fq 'resume Range request downgraded to HTTP 200' "$PROTOCOL" \
   || fail "HTTP 200 resume downgrade gate missing"
 grep -Fq 'resume offset mismatch' "$PROTOCOL" \
@@ -206,6 +210,8 @@ grep -Fq 'resumed206MustReachResourceEnd' "$TESTS" \
   || fail "partial base 206 rejection test missing"
 grep -Fq 'destinationOffsetMustMatchResolvedResumeWindow' "$TESTS" \
   || fail "local destination offset invariant test missing"
+grep -Fq 'lastModifiedMustBeStrongEnoughForIfRange' "$TESTS" \
+  || fail "strong Last-Modified If-Range invariant test missing"
 grep -Fq 'schedulerNeverExceedsChunksOrHardLimit' "$TESTS" \
   || fail "scheduler bound test missing"
 grep -Fq 'parallelRangesReassembleOriginalBytes' "$HTTP_TESTS" \
@@ -226,4 +232,4 @@ grep -Fq 'version=0.3.0-alpha15+diag1' alpha-module/module.prop \
 grep -Fq 'appVersionCode=16' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
-echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants, JVM HTTP contract tests and device validation tooling are present."
+echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants, strong validators, JVM HTTP contract tests and device validation tooling are present."
