@@ -35,9 +35,6 @@ final class RangeProtocol {
                 return BaseWindow.reject("unsupported original Range request: "
                         + requestRangeHeaderValue);
             }
-            if (!requestRange.openEnded) {
-                return BaseWindow.reject("bounded original Range request is not safe to expand");
-            }
 
             ContentRange responseRange = parseContentRange(contentRangeHeader);
             if (responseRange == null) {
@@ -47,8 +44,14 @@ final class RangeProtocol {
                 return BaseWindow.reject("resume offset mismatch: requested "
                         + requestRange.start + ", response " + responseRange.start);
             }
+            if (!requestRange.openEnded
+                    && (requestRange.end == null || responseRange.end != requestRange.end)) {
+                return BaseWindow.reject("bounded original Range response mismatch");
+            }
             if (responseRange.end != responseRange.total - 1L) {
-                return BaseWindow.reject("base Content-Range does not reach resource end");
+                return BaseWindow.reject(requestRange.openEnded
+                        ? "base Content-Range does not reach resource end"
+                        : "bounded original Range does not reach resource end");
             }
             long expectedLength = responseRange.length();
             if (contentLength > 0L && contentLength != expectedLength) {
