@@ -1,0 +1,60 @@
+name: Materialize Alpha 12 source
+
+on:
+  push:
+    branches:
+      - restore/materialize-alpha12-source
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout recovery branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Expand and validate Alpha 12
+        shell: bash
+        run: |
+          chmod +x ci/build-alpha12-fixed.sh
+          ci/build-alpha12-fixed.sh
+
+      - name: Replace encoded bootstrap with normal source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .bootstrap app/build dist .gradle
+          find . -maxdepth 1 -type f -name '.ci-*' -delete
+          rm -f .github/workflows/materialize-source.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "recovery: materialize Alpha 12 Android source"
+          git push origin HEAD:restore/materialize-alpha12-source
