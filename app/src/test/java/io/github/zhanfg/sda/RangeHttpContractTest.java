@@ -140,7 +140,8 @@ public final class RangeHttpContractTest {
 
         LocalRangeServer(byte[] body) throws IOException {
             this.body = body;
-            this.serverSocket = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+            this.serverSocket = new ServerSocket(
+                    0, 50, InetAddress.getByName("127.0.0.1"));
             this.acceptLoop = executor.submit(() -> {
                 while (!closed.get()) {
                     try {
@@ -154,7 +155,7 @@ public final class RangeHttpContractTest {
         }
 
         URL url() throws IOException {
-            return new URL("http", serverSocket.getInetAddress().getHostAddress(),
+            return new URL("http", "127.0.0.1",
                     serverSocket.getLocalPort(), "/fixture.bin");
         }
 
