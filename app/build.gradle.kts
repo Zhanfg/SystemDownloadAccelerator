@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.zhanfg.sda"
         minSdk = 26
         targetSdk = 36
-        versionCode = 14
-        versionName = "0.3.0-alpha13"
+        versionCode = 15
+        versionName = "0.3.0-alpha14"
     }
 
     buildTypes {
