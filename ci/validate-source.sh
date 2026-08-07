@@ -131,9 +131,9 @@ if 'GestureBackNavigation' not in issues or 'WrongConstant' not in issues:
     raise SystemExit('documented compatibility lint scopes are missing')
 PY
 
-grep -Fq 'versionName = "0.3.0-alpha13"' app/build.gradle.kts \
+grep -Fq 'versionName = "0.3.0-alpha14"' app/build.gradle.kts \
   || fail "Android versionName mismatch"
-grep -Fq 'versionCode = 14' app/build.gradle.kts \
+grep -Fq 'versionCode = 15' app/build.gradle.kts \
   || fail "Android versionCode mismatch"
 grep -Fq 'minApiVersion=102' app/src/main/resources/META-INF/xposed/module.prop \
   || fail "libxposed minimum API mismatch"
@@ -142,6 +142,8 @@ grep -Fq 'targetApiVersion=102' app/src/main/resources/META-INF/xposed/module.pr
 
 ENGINE=app/src/main/java/io/github/zhanfg/sda/ModuleMain.java
 MIGRATION=app/src/main/java/io/github/zhanfg/sda/SafetyMigrationApplication.java
+UI=app/src/main/java/io/github/zhanfg/sda/ModernMainActivity.java
+BRIDGE=app/src/main/java/io/github/zhanfg/sda/RootUiBridgeProvider.java
 
 grep -Fq 'class ParallelRangeInputStream extends InputStream' "$ENGINE" \
   || fail "functional parallel Range input stream is missing"
@@ -172,11 +174,25 @@ grep -Fq '.putBoolean("enabled", true)' "$MIGRATION" \
 grep -Fq 'maxThreads = clamp(preferences.getInt("max_threads", 8), 2, 16);' "$MIGRATION" \
   || fail "migration does not clamp legacy 1024-thread setting"
 
+grep -Fq '"report_engine_status".equals(method)' "$BRIDGE" \
+  || fail "runtime Range telemetry bridge is missing"
+grep -Fq 'Math.max(0, Math.min(16, extras.getInt("threads", 0)))' "$BRIDGE" \
+  || fail "runtime telemetry thread value is not bounded"
+grep -Fq 'preferences.getString("engine_status", "idle")' "$UI" \
+  || fail "home page does not read actual engine runtime state"
+grep -Fq '"max_threads", 8' "$UI" \
+  || fail "UI maximum-thread default is not aligned to runtime"
+grep -Fq 'value = Math.max(2, Math.min(16, value));' "$UI" \
+  || fail "UI thread input is not limited to 2-16"
+if grep -Fq '允许范围 1–1024' "$UI" || grep -Fq '"strict_range"' "$UI" \
+  || grep -Fq '"auto_fallback"' "$UI"; then
+  fail "obsolete configurable safety policy remains in the UI"
+fi
+
 grep -Fq 'new ProcessBuilder("su", "-c", "id -u")' \
   app/src/main/java/io/github/zhanfg/sda/RootAccess.java \
   || fail "root probe is no longer the fixed id -u command"
-grep -Fq 'enforceDownloadsCaller();' \
-  app/src/main/java/io/github/zhanfg/sda/RootUiBridgeProvider.java \
+grep -Fq 'enforceDownloadsCaller();' "$BRIDGE" \
   || fail "root UI bridge caller validation missing"
 grep -Fq 'enforceDownloadsCaller();' \
   app/src/main/java/io/github/zhanfg/sda/DownloadLiveUpdateProvider.java \
@@ -199,7 +215,9 @@ if grep -R -n 'RealDownloadAcceleratorModule' \
   app/src/main app/proguard-rules.pro 2>/dev/null; then
   fail "legacy direct-write Range engine is still referenced by the compiled app"
 fi
-grep -Fq 'appVersionCode=14' alpha-module/module.prop \
+grep -Fq 'version=0.3.0-alpha14+diag1' alpha-module/module.prop \
+  || fail "wrapper module version mismatch"
+grep -Fq 'appVersionCode=15' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
 echo "Direct-source validation passed. Functional bounded Range engine is present."
