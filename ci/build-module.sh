@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.3.0-alpha13}"
+VERSION="${VERSION:-0.3.0-alpha14}"
 TARGET=aarch64-linux-android
 ANDROID_API="${ANDROID_API:-26}"
 NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
