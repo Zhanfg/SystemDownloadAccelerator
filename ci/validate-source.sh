@@ -135,12 +135,20 @@ grep -Fq 'RequestSnapshot.capture(connection)' "$ENGINE" \
   || fail "original Range request snapshot is missing"
 grep -Fq 'RangeProtocol.resolveBaseWindow' "$ENGINE" \
   || fail "resume alignment gate is not used by runtime preflight"
+grep -Fq 'RangeProtocol.validateDestinationOffset' "$ENGINE" \
+  || fail "local destination offset is not part of Range preflight"
+grep -Fq 'Os.lseek(descriptor, 0L, OsConstants.SEEK_CUR)' "$ENGINE" \
+  || fail "destination FD offset is not measured with lseek"
 grep -Fq 'RangeProtocol.chunkBounds' "$ENGINE" \
   || fail "tested chunk geometry is not used by runtime"
 grep -Fq 'boolean enabled = false;' "$ENGINE" \
   || fail "preference IPC failure must remain fail-closed"
 grep -Fq 'new File(context.getCacheDir(), "sda-range-spool")' "$ENGINE" \
   || fail "Range spool must live in DownloadProvider private cache"
+grep -Fq 'ACTIVE_SPOOL_DIRS.contains(absolute)' "$ENGINE" \
+  || fail "stale spool cleanup can delete an active session"
+grep -Fq 'ACTIVE_SPOOL_DIRS.add(sessionDir)' "$ENGINE" \
+  || fail "active spool sessions are not registered"
 grep -Fq 'synchronized (preflight.configureLock)' "$ENGINE" \
   || fail "worker configuration calls are not serialized"
 grep -Fq 'if (match != null) return null;' "$ENGINE" \
@@ -157,12 +165,25 @@ grep -Fq 'resume Range request downgraded to HTTP 200' "$PROTOCOL" \
   || fail "HTTP 200 resume downgrade gate missing"
 grep -Fq 'resume offset mismatch' "$PROTOCOL" \
   || fail "206 request/response alignment gate missing"
+grep -Fq 'bounded original Range request is not safe to expand' "$PROTOCOL" \
+  || fail "bounded Range expansion gate missing"
+grep -Fq 'base Content-Range does not reach resource end' "$PROTOCOL" \
+  || fail "partial base 206 expansion gate missing"
+grep -Fq 'destination offset mismatch' "$PROTOCOL" \
+  || fail "destination FD mismatch gate missing"
 grep -Fq 'original Range request state unavailable' "$PROTOCOL" \
   || fail "unknown Range request state is not fail-closed"
+
 grep -Fq 'freshHttp200IsAcceptedOnlyWhenNoRangeWasRequested' "$TESTS" \
   || fail "fresh/resume HTTP 200 invariant test missing"
-grep -Fq 'resumed206MustMatchOriginalRequestStart' "$TESTS" \
-  || fail "resume offset invariant test missing"
+grep -Fq 'resumed206MustMatchOpenEndedOriginalRequest' "$TESTS" \
+  || fail "open-ended resume alignment invariant test missing"
+grep -Fq 'boundedResumeRequestFailsClosed' "$TESTS" \
+  || fail "bounded resume fail-closed test missing"
+grep -Fq 'resumed206MustReachResourceEnd' "$TESTS" \
+  || fail "partial base 206 rejection test missing"
+grep -Fq 'destinationOffsetMustMatchResolvedResumeWindow' "$TESTS" \
+  || fail "local destination offset invariant test missing"
 grep -Fq 'schedulerNeverExceedsChunksOrHardLimit' "$TESTS" \
   || fail "scheduler bound test missing"
 
@@ -179,4 +200,4 @@ grep -Fq 'version=0.3.0-alpha15+diag1' alpha-module/module.prop \
 grep -Fq 'appVersionCode=16' alpha-module/module.prop \
   || fail "wrapper module app version mismatch"
 
-echo "Direct-source validation passed. Alpha 15 resume-aligned Range invariants are present."
+echo "Direct-source validation passed. Alpha 15 request/response/FD-aligned Range invariants are present."
