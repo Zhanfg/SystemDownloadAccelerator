@@ -613,11 +613,26 @@ public final class ModuleMain extends XposedModule {
         }
 
         static Validator from(HttpURLConnection connection) {
-            String etag = trim(connection.getHeaderField("ETag"));
-            if (etag != null && etag.regionMatches(true, 0, "W/", 0, 2)) etag = null;
-            String modified = trim(connection.getHeaderField("Last-Modified"));
-            return new Validator(etag, modified);
-        }
+    String etag = trim(connection.getHeaderField("ETag"));
+    if (etag != null && etag.regionMatches(true, 0, "W/", 0, 2)) etag = null;
+    if (etag != null) return new Validator(etag, null);
+
+    String modified = trim(connection.getHeaderField("Last-Modified"));
+    if (modified == null) return new Validator(null, null);
+
+    long modifiedMillis;
+    long responseDateMillis;
+    try {
+        modifiedMillis = connection.getHeaderFieldDate("Last-Modified", -1L);
+        responseDateMillis = connection.getHeaderFieldDate("Date", -1L);
+    } catch (Throwable ignored) {
+        return new Validator(null, null);
+    }
+    if (!RangeProtocol.isStrongLastModified(modifiedMillis, responseDateMillis)) {
+        return new Validator(null, null);
+    }
+    return new Validator(null, modified);
+}
 
         boolean stable() {
             return strongEtag != null || lastModified != null;
