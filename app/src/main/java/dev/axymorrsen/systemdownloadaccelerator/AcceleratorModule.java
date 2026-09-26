@@ -3,6 +3,7 @@ package dev.axymorrsen.systemdownloadaccelerator;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import android.util.Pair;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
@@ -12,17 +13,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
+import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam;
+import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam;
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam;
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
 
 /**
- * Modern libxposed entry point.
+ * Modern libxposed entry point with API-102 hot reload support.
  *
  * Provider owns transfer state. Downloads UI and SystemUI are read/control surfaces
  * only; they must never become independent sources of download truth.
  */
 public final class AcceleratorModule extends XposedModule {
     private static final String TAG = "SysDlAccel";
+    private static final String HOOK_PREFIX = "sysdl:";
 
     private static final Set<String> PROVIDER_METHODS = new HashSet<>(Arrays.asList(
             "run", "executeDownload", "transferData", "addRequestHeaders"
@@ -43,11 +47,20 @@ public final class AcceleratorModule extends XposedModule {
     private final AtomicBoolean providerInstalled = new AtomicBoolean(false);
     private final AtomicBoolean downloadsUiSeen = new AtomicBoolean(false);
     private final AtomicBoolean systemUiSeen = new AtomicBoolean(false);
+    private final Set<String> hookedIds = new HashSet<>();
+
+    /**
+     * Boot/framework-owned Pair is intentionally used as the saved state carrier.
+     * A module-owned state class would belong to the old module ClassLoader and is
+     * therefore unsafe to cast after a hot reload generation switch.
+     */
+    private Pair<String, ClassLoader> reloadState;
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
         log(Log.INFO, TAG, "module loaded: process=" + param.getProcessName()
-                + ", sdk=" + Build.VERSION.SDK_INT);
+                + ", sdk=" + Build.VERSION.SDK_INT
+                + ", api=" + getApiVersion());
     }
 
     @Override
@@ -66,16 +79,68 @@ public final class AcceleratorModule extends XposedModule {
             return;
         }
 
+        ClassLoader classLoader = param.getClassLoader();
+        reloadState = Pair.create(scope.packageName, classLoader);
+        installForScope(scope, classLoader, false);
+    }
+
+    @Override
+    public boolean onHotReloading(HotReloadingParam param) {
+        if (reloadState == null) {
+            log(Log.WARN, TAG, "hot reload rejected: target context not ready");
+            return false;
+        }
+
+        param.setSavedInstanceState(reloadState);
+        log(Log.INFO, TAG, "hot reload preparing: " + reloadState.first);
+        return true;
+    }
+
+    @Override
+    public void onHotReloaded(HotReloadedParam param) {
+        Object saved = param.getSavedInstanceState();
+        if (!(saved instanceof Pair<?, ?> pair)
+                || !(pair.first instanceof String packageName)
+                || !(pair.second instanceof ClassLoader classLoader)) {
+            log(Log.ERROR, TAG, "hot reload failed: missing target context");
+            unhookUnknownOldHandles(param);
+            return;
+        }
+
+        Scope scope = Scope.fromPackage(packageName);
+        if (scope == null) {
+            log(Log.ERROR, TAG, "hot reload failed: unsupported target " + packageName);
+            unhookUnknownOldHandles(param);
+            return;
+        }
+
+        reloadState = Pair.create(packageName, classLoader);
+
+        try {
+            installForScope(scope, classLoader, true);
+            log(Log.INFO, TAG, "hot reload complete: " + packageName);
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "hot reload install failed: " + packageName, t);
+        } finally {
+            unhookUnknownOldHandles(param);
+        }
+    }
+
+    private void installForScope(Scope scope, ClassLoader classLoader, boolean hotReload) {
         switch (scope) {
             case PROVIDER:
-                installProviderHooks(param.getClassLoader());
+                installProviderHooks(classLoader);
                 break;
             case DOWNLOADS_UI:
-                probeDownloadsUi(param.getClassLoader());
+                probeDownloadsUi(classLoader);
                 break;
             case SYSTEM_UI:
-                probeSystemUi(param.getClassLoader());
+                probeSystemUi(classLoader);
                 break;
+        }
+
+        if (hotReload) {
+            log(Log.DEBUG, TAG, "scope refreshed from new generation: " + scope.packageName);
         }
     }
 
@@ -106,7 +171,11 @@ public final class AcceleratorModule extends XposedModule {
     }
 
     private void installProviderProbe(Method method) {
+        String id = HOOK_PREFIX + method.toGenericString();
+        hookedIds.add(id);
+
         hook(method)
+                .setId(id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
                     long startedNs = SystemClock.elapsedRealtimeNanos();
@@ -129,6 +198,19 @@ public final class AcceleratorModule extends XposedModule {
                         }
                     }
                 });
+    }
+
+    private void unhookUnknownOldHandles(HotReloadedParam param) {
+        param.getOldHookHandles().forEach(handle -> {
+            String id = handle.getId();
+            if (id == null || !hookedIds.contains(id)) {
+                try {
+                    handle.unhook();
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "unable to remove stale hook", t);
+                }
+            }
+        });
     }
 
     private void probeDownloadsUi(ClassLoader classLoader) {
