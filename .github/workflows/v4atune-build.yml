@@ -1,5 +1,9 @@
 name: Build V4ATune Kotlin APK
 
+concurrency:
+  group: v4atune-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [ "v4atune-kotlin" ]
@@ -35,10 +39,10 @@ jobs:
           gradle-version: "9.2.1"
 
       - name: Compile Kotlin
-        run: gradle :app:compileDebugKotlin --stacktrace --no-daemon
+        run: gradle :app:compileDebugKotlin --stacktrace --no-daemon --build-cache
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace --no-daemon
+        run: gradle :app:assembleDebug --stacktrace --no-daemon --build-cache
 
       - name: APK sanity checks
         run: |
