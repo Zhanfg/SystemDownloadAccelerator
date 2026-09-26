@@ -6,7 +6,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.util.Pair;
 
-import java.lang.reflect.Member;
+import java.lang.reflect.Executable;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -183,9 +183,9 @@ public final class AcceleratorModule extends XposedModule {
     private ClassLoader recoverTargetClassLoader(HotReloadedParam param) {
         try {
             for (XposedInterface.HookHandle handle : param.getOldHookHandles()) {
-                Member member = handle.getMember();
-                if (member != null && member.getDeclaringClass() != null) {
-                    ClassLoader loader = member.getDeclaringClass().getClassLoader();
+                Executable executable = handle.getExecutable();
+                if (executable != null && executable.getDeclaringClass() != null) {
+                    ClassLoader loader = executable.getDeclaringClass().getClassLoader();
                     if (loader != null) {
                         log(Log.INFO, TAG, "hot reload: recovered ClassLoader from old hook");
                         return loader;
