@@ -64,7 +64,7 @@ final class DownloadSelfTest {
             serverThread.start();
 
             int port = server.getLocalPort();
-            listener.onUpdate("本地测试服务器已启动 · 127.0.0.1:" + port,
+            listener.onUpdate("本地测试服务器已启动 · localhost:" + port,
                     false, false);
 
             String fileName = "SysDlProbe-" + System.currentTimeMillis() + ".bin";
@@ -78,7 +78,7 @@ final class DownloadSelfTest {
                 destination.delete();
             }
 
-            Uri uri = Uri.parse("http://127.0.0.1:" + port + "/probe.bin");
+            Uri uri = Uri.parse("http://localhost:" + port + "/probe.bin");
             DownloadManager.Request request = new DownloadManager.Request(uri)
                     .setTitle("System Download Accelerator self-test")
                     .setDescription("Local DownloadManager / DownloadProvider probe")
@@ -132,10 +132,11 @@ final class DownloadSelfTest {
                             int reason = cursor.getInt(
                                     cursor.getColumnIndexOrThrow(
                                             DownloadManager.COLUMN_REASON));
-                            listener.onUpdate(
-                                    "下载失败 · reason=" + reason,
-                                    true,
-                                    false);
+                            String detail = "下载失败 · reason=" + reason;
+                            if (reason == 400) {
+                                detail += " · HTTP 400/明文策略拒绝";
+                            }
+                            listener.onUpdate(detail, true, false);
                             return;
                         }
                     }
