@@ -1,8 +1,8 @@
-name: Build V4ATune APK
+name: Build V4ATune Kotlin APK
 
 on:
   push:
-    branches: [ "v4atune-app" ]
+    branches: [ "v4atune-kotlin" ]
     paths:
       - "v4atune/**"
       - ".github/workflows/v4atune-build.yml"
@@ -23,28 +23,33 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Android SDK
+      - name: Install Android SDK 37
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(command -v sdkmanager)"; fi
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.1"
+          "$SDKMANAGER" "platforms;android-37" "build-tools;36.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.7.1"
+
+      - name: Compile Kotlin
+        run: gradle :app:compileDebugKotlin --stacktrace --no-daemon
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Verify APK
+      - name: APK sanity checks
         run: |
-          test -s app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
-          unzip -t app/build/outputs/apk/debug/app-debug.apk >/dev/null
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -t "$APK" >/dev/null
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" | head -n 20
+          ls -lh "$APK"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: V4ATune-0.1.0-alpha01
+          name: V4ATune-0.2.0-alpha01-kotlin
           path: v4atune/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
