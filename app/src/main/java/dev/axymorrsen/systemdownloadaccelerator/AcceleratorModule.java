@@ -26,6 +26,7 @@ import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam;
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam;
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam;
+import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
 
 /**
@@ -83,11 +84,42 @@ public final class AcceleratorModule extends XposedModule {
     }
 
     @Override
-    public void onPackageReady(PackageReadyParam param) {
-        if (!param.isFirstPackage()) {
+    public void onPackageLoaded(PackageLoadedParam param) {
+        Scope scope = Scope.fromPackage(param.getPackageName());
+        if (scope == null) {
             return;
         }
 
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+            return;
+        }
+
+        ClassLoader classLoader;
+        try {
+            classLoader = param.getDefaultClassLoader();
+        } catch (Throwable t) {
+            emit(Log.DEBUG,
+                    "onPackageLoaded classloader unavailable package="
+                            + param.getPackageName(),
+                    t);
+            return;
+        }
+
+        reloadState = Pair.create(
+                Pair.create(scope.packageName, processName),
+                classLoader);
+
+        /*
+         * Do not require isFirstPackage here. DownloadProvider/Downloads UI
+         * can participate in shared-UID/multi-package processes on OEM builds.
+         * Scope.fromPackage() already limits installation to our exact targets,
+         * and each installer is idempotent.
+         */
+        installForScope(scope, classLoader, false);
+    }
+
+    @Override
+    public void onPackageReady(PackageReadyParam param) {
         Scope scope = Scope.fromPackage(param.getPackageName());
         if (scope == null) {
             return;
@@ -759,6 +791,25 @@ public final class AcceleratorModule extends XposedModule {
             Object app = currentApplication.invoke(null);
             if (app instanceof Context) {
                 return (Context) app;
+            }
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            Class<?> activityThread =
+                    Class.forName("android.app.ActivityThread");
+            Method currentActivityThread =
+                    activityThread.getDeclaredMethod("currentActivityThread");
+            currentActivityThread.setAccessible(true);
+            Object at = currentActivityThread.invoke(null);
+            if (at != null) {
+                Method getSystemContext =
+                        activityThread.getDeclaredMethod("getSystemContext");
+                getSystemContext.setAccessible(true);
+                Object system = getSystemContext.invoke(at);
+                if (system instanceof Context) {
+                    return (Context) system;
+                }
             }
         } catch (Throwable ignored) {
         }

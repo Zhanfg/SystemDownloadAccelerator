@@ -95,7 +95,9 @@ public final class TelemetryProvider extends ContentProvider {
                         "seq", "when", "uid", "phase", "detail"
                 });
 
-        if (context == null || !EVENTS_URI.getPath().equals(uri.getPath())) {
+        if (context == null
+                || Binder.getCallingUid() != context.getApplicationInfo().uid
+                || !EVENTS_URI.getPath().equals(uri.getPath())) {
             return cursor;
         }
 

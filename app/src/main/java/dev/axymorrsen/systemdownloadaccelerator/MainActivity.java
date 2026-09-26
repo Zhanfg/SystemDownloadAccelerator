@@ -337,9 +337,13 @@ public final class MainActivity extends Activity {
         selfTestButton.setText("自检运行中…");
         selfTestStatus.setText("正在准备本地 DownloadManager 测试");
         selfTestStatus.setTextColor(AMBER);
-        TelemetryProvider.clearEvents(getApplicationContext());
         engineEvents.clear();
         engineDiag.setText("引擎事件：\n等待连接流接管");
+        EngineTelemetry.emit(
+                getApplicationContext(),
+                "SELFTEST_BEGIN",
+                "version=" + BuildConfig.VERSION_CODE
+                        + " at=" + android.os.SystemClock.elapsedRealtime());
         engineDiag.setTextColor(MUTED);
 
         DownloadSelfTest.run(this, (message, terminal, success) ->

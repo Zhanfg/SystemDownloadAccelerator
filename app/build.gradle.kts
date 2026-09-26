@@ -11,8 +11,8 @@ android {
         applicationId = "dev.axymorrsen.systemdownloadaccelerator"
         minSdk = 26
         targetSdk = 37
-        versionCode = 13
-        versionName = "0.4.0-alpha03"
+        versionCode = 14
+        versionName = "0.4.0-alpha04"
     }
 
     buildFeatures {
