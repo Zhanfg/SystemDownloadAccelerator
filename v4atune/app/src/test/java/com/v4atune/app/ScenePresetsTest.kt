@@ -76,4 +76,83 @@ class ScenePresetsTest {
         assertEquals(25, custom.eqBands)
         assertEquals(8192, custom.firTaps)
     }
+    @Test
+    fun everySceneHasCompleteDspSpecification() {
+        Scene.entries.filter { it != Scene.Custom }.forEach { scene ->
+            val spec = SceneDspProfiles.forScene(scene)
+            assertEquals(scene, spec.scene)
+            assertEquals(31, spec.eqTarget31Db.size)
+            assertTrue(spec.eqTarget31Db.all { it.isFinite() && it in -6.0..3.0 })
+            assertEquals(Component.entries.toSet(), spec.policies.keys)
+            assertTrue(spec.fir.defaultTaps in listOf(1024, 2048, 4096, 8192))
+            assertTrue(spec.fir.eqShare in 0.0..1.0)
+            assertTrue(spec.dynamicEq.maxBands in 1..10)
+            assertTrue(spec.dynamicEq.attackMs > 0.0)
+            assertTrue(spec.dynamicEq.releaseMs > spec.dynamicEq.attackMs)
+            assertEquals(4, spec.loudness.mbcCrossovers.size)
+            assertEquals(5, spec.loudness.mbcThresholdsDb.size)
+            assertEquals(5, spec.loudness.mbcRatios.size)
+            assertEquals(5, spec.loudness.mbcAttacksSec.size)
+            assertEquals(5, spec.loudness.mbcReleasesSec.size)
+        }
+    }
+
+    @Test
+    fun sevenSceneCurvesAreActuallyDistinct() {
+        val fingerprints = Scene.entries
+            .filter { it != Scene.Custom }
+            .map { SceneDspProfiles.forScene(it).eqTarget31Db.joinToString(",") }
+            .toSet()
+        assertEquals(7, fingerprints.size)
+    }
+
+    @Test
+    fun movieUsesSpatialChainAndGameUsesLatencyBudget() {
+        val movie = SceneDspProfiles.movie
+        assertEquals(Policy.On, movie.policies[Component.FieldSurround])
+        assertEquals(Policy.On, movie.policies[Component.StereoImager])
+        assertTrue(movie.spatial.fieldWidening > 1.0)
+        assertTrue(movie.spatial.imagerHighWidth > 1.0)
+
+        val game = SceneDspProfiles.game
+        assertEquals(Policy.Off, game.policies[Component.Convolver])
+        assertEquals(1024, game.fir.defaultTaps)
+        assertTrue(!game.fir.autoEnable)
+        assertTrue(game.dynamicEq.attackMs <= 5.0)
+        assertTrue(game.dynamicEq.releaseMs <= 90.0)
+    }
+
+    @Test
+    fun outdoorAndNightHaveDifferentLoudnessIntent() {
+        val outdoor = SceneDspProfiles.outdoor
+        val night = SceneDspProfiles.night
+
+        assertEquals(-14.0, outdoor.loudness.lufsTarget, 0.0)
+        assertEquals(Policy.On, outdoor.policies[Component.PlaybackGain])
+        assertEquals(Policy.On, outdoor.policies[Component.MultibandCompressor])
+        assertTrue(outdoor.loudness.playbackMaxGain > night.loudness.playbackMaxGain)
+
+        assertEquals(-19.0, night.loudness.lufsTarget, 0.0)
+        assertEquals(Policy.On, night.policies[Component.FetCompressor])
+        assertEquals(Policy.Off, night.policies[Component.PsychoBass])
+        assertEquals(Policy.Off, night.policies[Component.Bass])
+    }
+
+    @Test
+    fun manualOverrideKeepsOriginatingSceneBaseline() {
+        val movie = ScenePresets.apply(Scene.Movie)
+        val custom = movie.copy(
+            scene = Scene.Custom,
+            firTaps = 8192,
+            policies = movie.policies.toMutableMap().apply {
+                this[Component.Reverb] = Policy.On
+            },
+        )
+        assertEquals(Scene.Custom, custom.scene)
+        assertEquals(Scene.Movie, custom.baseScene)
+        assertEquals(Scene.Movie, custom.effectiveScene)
+        assertEquals(8192, custom.firTaps)
+        assertEquals(Policy.On, custom.policies[Component.Reverb])
+    }
+
 }
