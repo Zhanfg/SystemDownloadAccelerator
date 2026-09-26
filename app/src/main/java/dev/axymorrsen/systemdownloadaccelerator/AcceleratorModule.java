@@ -15,11 +15,17 @@ import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import dalvik.system.DexFile;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -274,6 +280,18 @@ public final class AcceleratorModule extends XposedModule {
                 "process=" + processName
                         + " version=" + BuildConfig.VERSION_CODE);
 
+        int networkHooks = installNetworkOpenHooks(processContext);
+        int urlHooks = installUrlOpenHooks(processContext);
+        int httpEngineHooks = installPlatformHttpEngineHooks(processContext);
+
+        int runHooks = 0;
+        providerDeoptimizedCount = 0;
+
+        /*
+         * AOSP's DownloadThread is optional. ColorOS can rename or replace the
+         * execution class entirely. Generic connection/stream interception must
+         * remain active even when this class does not exist.
+         */
         try {
             Class<?> downloadThread =
                     classLoader.loadClass(
@@ -282,7 +300,6 @@ public final class AcceleratorModule extends XposedModule {
             providerDeoptimizedCount =
                     deoptimizeDownloadThread(downloadThread);
 
-            int runHooks = 0;
             for (Method method : downloadThread.getDeclaredMethods()) {
                 if (!"run".equals(method.getName())
                         || method.getParameterCount() != 0) {
@@ -294,56 +311,183 @@ public final class AcceleratorModule extends XposedModule {
                     runHooks++;
                 } catch (Throwable t) {
                     emit(Log.WARN,
-                            "run hook install failed "
+                            "optional DownloadThread.run hook failed "
                                     + method.toGenericString(),
                             t);
                     EngineTelemetry.emit(
                             processContext,
                             "HOOK_FAIL",
-                            "DownloadThread.run: "
+                            "optional DownloadThread.run: "
                                     + t.getClass().getSimpleName()
                                     + ": "
                                     + String.valueOf(t.getMessage()));
                 }
             }
 
-            int networkHooks =
-                    installNetworkOpenHooks(processContext);
-            int urlHooks =
-                    installUrlOpenHooks(processContext);
-            int httpEngineHooks =
-                    installPlatformHttpEngineHooks(processContext);
-
-            providerHookCount =
-                    runHooks + networkHooks + urlHooks + httpEngineHooks;
-
-            String summary =
-                    "hooks=" + providerHookCount
-                            + " run=" + runHooks
-                            + " network=" + networkHooks
-                            + " url=" + urlHooks
-                            + " httpEngine=" + httpEngineHooks
-                            + " deopt=" + providerDeoptimizedCount;
-
-            emit(Log.INFO, "provider adapter installed " + summary);
             EngineTelemetry.emit(
                     processContext,
-                    "ADAPTER_READY",
-                    summary);
-            return providerHookCount;
+                    "AOSP_EXECUTOR",
+                    "DownloadThread present runHooks=" + runHooks
+                            + " deopt=" + providerDeoptimizedCount);
+        } catch (ClassNotFoundException missingAospThread) {
+            EngineTelemetry.emit(
+                    processContext,
+                    "OEM_EXECUTOR",
+                    "AOSP DownloadThread absent; generic adapter remains active");
+            scanProviderDex(
+                    processContext,
+                    classLoader);
         } catch (Throwable t) {
-            providerInstalled.set(false);
-            providerHookCount = 0;
-            emit(Log.ERROR,
-                    "provider adapter install failed; native path preserved",
-                    t);
             EngineTelemetry.emit(
                     processContext,
-                    "ADAPTER_ERROR",
+                    "OEM_EXECUTOR_ERROR",
                     t.getClass().getSimpleName()
                             + ": "
                             + String.valueOf(t.getMessage()));
-            return 0;
+        }
+
+        providerHookCount =
+                runHooks + networkHooks + urlHooks + httpEngineHooks;
+
+        String summary =
+                "hooks=" + providerHookCount
+                        + " run=" + runHooks
+                        + " network=" + networkHooks
+                        + " url=" + urlHooks
+                        + " httpEngine=" + httpEngineHooks
+                        + " deopt=" + providerDeoptimizedCount;
+
+        emit(Log.INFO, "provider adapter installed " + summary);
+        EngineTelemetry.emit(
+                processContext,
+                "ADAPTER_READY",
+                summary);
+
+        if (providerHookCount == 0) {
+            EngineTelemetry.emit(
+                    processContext,
+                    "ADAPTER_WARN",
+                    "no hooks installed; native path only");
+        }
+        return providerHookCount;
+    }
+
+    private void scanProviderDex(
+            Context processContext,
+            ClassLoader classLoader) {
+        if (processContext == null) {
+            return;
+        }
+
+        DexFile dex = null;
+        try {
+            android.content.pm.ApplicationInfo info =
+                    processContext.getPackageManager().getApplicationInfo(
+                            "com.android.providers.downloads",
+                            0);
+            String sourceDir = info.sourceDir;
+            dex = new DexFile(sourceDir);
+
+            ArrayList<String> candidates = new ArrayList<>();
+            Enumeration<String> entries = dex.entries();
+
+            while (entries.hasMoreElements() && candidates.size() < 48) {
+                String name = entries.nextElement();
+                if (!name.startsWith("com.android.providers.downloads")) {
+                    continue;
+                }
+
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (!(lower.contains("download")
+                        || lower.contains("http")
+                        || lower.contains("thread")
+                        || lower.contains("worker")
+                        || lower.contains("task")
+                        || lower.contains("job")
+                        || lower.contains("transfer")
+                        || lower.contains("fetch")
+                        || lower.contains("network"))) {
+                    continue;
+                }
+
+                String signature = describeExecutorCandidate(
+                        classLoader,
+                        name);
+                candidates.add(signature);
+            }
+
+            StringBuilder detail = new StringBuilder();
+            detail.append("source=").append(sourceDir)
+                    .append(" candidates=").append(candidates.size());
+
+            for (String candidate : candidates) {
+                if (detail.length() > 1700) {
+                    detail.append(" | ...");
+                    break;
+                }
+                detail.append(" | ").append(candidate);
+            }
+
+            EngineTelemetry.emit(
+                    processContext,
+                    "DEX_SCAN",
+                    detail.toString());
+        } catch (Throwable t) {
+            EngineTelemetry.emit(
+                    processContext,
+                    "DEX_SCAN_ERROR",
+                    t.getClass().getSimpleName()
+                            + ": "
+                            + String.valueOf(t.getMessage()));
+        } finally {
+            if (dex != null) {
+                try {
+                    dex.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    private String describeExecutorCandidate(
+            ClassLoader classLoader,
+            String className) {
+        try {
+            Class<?> type = classLoader.loadClass(className);
+            int runLike = 0;
+            int httpArgs = 0;
+            int streamMethods = 0;
+
+            for (Method method : type.getDeclaredMethods()) {
+                String lower =
+                        method.getName().toLowerCase(Locale.ROOT);
+
+                if ("run".equals(method.getName())
+                        || lower.contains("execute")
+                        || lower.contains("download")
+                        || lower.contains("transfer")
+                        || lower.contains("fetch")) {
+                    runLike++;
+                }
+
+                for (Class<?> parameter : method.getParameterTypes()) {
+                    if (HttpURLConnection.class.isAssignableFrom(parameter)
+                            || URLConnection.class.isAssignableFrom(parameter)) {
+                        httpArgs++;
+                    }
+                    if (InputStream.class.isAssignableFrom(parameter)) {
+                        streamMethods++;
+                    }
+                }
+            }
+
+            return className
+                    + "{exec=" + runLike
+                    + ",http=" + httpArgs
+                    + ",stream=" + streamMethods
+                    + "}";
+        } catch (Throwable ignored) {
+            return className + "{unloadable}";
         }
     }
 
