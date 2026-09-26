@@ -8,6 +8,7 @@ import android.util.Pair;
 
 import java.lang.reflect.Executable;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -55,6 +56,10 @@ public final class AcceleratorModule extends XposedModule {
     private final Set<String> hookedIds = new HashSet<>();
 
     private int providerHookCount;
+    private int providerDeoptimizedCount;
+    private int providerDeoptFailedCount;
+    private int providerConnectionCandidateCount;
+    private String providerHookInventory = "";
     private int downloadsUiClassCount;
     private int systemUiClassCount;
     private String processName = "";
@@ -270,18 +275,21 @@ public final class AcceleratorModule extends XposedModule {
         try {
             Class<?> downloadThread =
                     classLoader.loadClass("com.android.providers.downloads.DownloadThread");
+            Method[] methods = downloadThread.getDeclaredMethods();
 
-            /*
-             * ART may inline private transferData() into executeDownload().
-             * libxposed explicitly requires deoptimizing the caller when a
-             * hooked callee may have been inlined. Deoptimize all execution
-             * entry/caller methods before installing transfer hooks.
-             */
             int deoptimized = 0;
             int deoptFailed = 0;
-            for (Method method : downloadThread.getDeclaredMethods()) {
-                if (!"executeDownload".equals(method.getName())
-                        && !"run".equals(method.getName())) {
+
+            /*
+             * We intentionally deoptimize the complete DownloadThread body.
+             * Private transfer helpers are common ART inlining targets, and on
+             * OEM builds the caller graph can differ from AOSP. Network I/O
+             * dominates this class, so interpreter overhead here is negligible
+             * compared with missing the actual transfer path.
+             */
+            for (Method method : methods) {
+                int modifiers = method.getModifiers();
+                if (Modifier.isAbstract(modifiers) || Modifier.isNative(modifiers)) {
                     continue;
                 }
                 method.setAccessible(true);
@@ -293,97 +301,165 @@ public final class AcceleratorModule extends XposedModule {
                     }
                 } catch (Throwable t) {
                     deoptFailed++;
-                    emit(Log.WARN,
-                            "deoptimize failed for " + method.toGenericString(), t);
+                    emit(Log.DEBUG,
+                            "deoptimize unavailable for " + method.toGenericString(), t);
                 }
             }
 
             int count = 0;
-            int transferHooks = 0;
-            for (Method method : downloadThread.getDeclaredMethods()) {
-                if (!PROVIDER_METHODS.contains(method.getName())) {
+            int connectionCandidates = 0;
+            StringBuilder inventory = new StringBuilder();
+
+            for (Method method : methods) {
+                if (!shouldHookProviderMethod(method)) {
                     continue;
                 }
+
                 method.setAccessible(true);
-                installProviderProbe(method);
+                boolean declaredConnection = hasDeclaredHttpConnection(method);
+                installProviderProbe(method, declaredConnection);
                 count++;
-                if ("transferData".equals(method.getName())) {
-                    transferHooks++;
+
+                if (declaredConnection) {
+                    connectionCandidates++;
+                }
+
+                if (inventory.length() < 1800) {
+                    if (inventory.length() > 0) {
+                        inventory.append(" | ");
+                    }
+                    inventory.append(method.getName())
+                            .append("(");
+                    Class<?>[] params = method.getParameterTypes();
+                    for (int i = 0; i < params.length; i++) {
+                        if (i > 0) inventory.append(",");
+                        inventory.append(params[i].getSimpleName());
+                    }
+                    inventory.append(")");
+                    if (declaredConnection) {
+                        inventory.append("[HTTP]");
+                    }
                 }
             }
 
             providerHookCount = count;
+            providerDeoptimizedCount = deoptimized;
+            providerDeoptFailedCount = deoptFailed;
+            providerConnectionCandidateCount = connectionCandidates;
+            providerHookInventory = inventory.toString();
+
             emit(Log.INFO, "provider hooks installed=" + count
-                    + " transferHooks=" + transferHooks
+                    + " httpCandidates=" + connectionCandidates
                     + " deoptimized=" + deoptimized
-                    + " deoptFailed=" + deoptFailed);
+                    + " deoptFailed=" + deoptFailed
+                    + " inventory=" + providerHookInventory);
             return count;
         } catch (Throwable t) {
             providerInstalled.set(false);
             providerHookCount = 0;
+            providerDeoptimizedCount = 0;
+            providerDeoptFailedCount = 0;
+            providerConnectionCandidateCount = 0;
+            providerHookInventory = "";
             emit(Log.ERROR, "provider hook install unavailable; native path preserved", t);
             return 0;
         }
     }
 
-    private void installProviderProbe(Method method) {
+    private boolean shouldHookProviderMethod(Method method) {
+        String name = method.getName();
+        if ("run".equals(name)
+                || PROVIDER_METHODS.contains(name)
+                || hasDeclaredHttpConnection(method)) {
+            return true;
+        }
+
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("execute")
+                || lower.contains("download")
+                || lower.contains("transfer");
+    }
+
+    private boolean hasDeclaredHttpConnection(Method method) {
+        for (Class<?> type : method.getParameterTypes()) {
+            if (HttpURLConnection.class.isAssignableFrom(type)
+                    || type.isAssignableFrom(HttpURLConnection.class)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void installProviderProbe(Method method, boolean declaredConnection) {
         String id = HOOK_PREFIX + method.toGenericString();
         hookedIds.add(id);
 
-        final boolean transferCandidate = "transferData".equals(method.getName());
+        final String methodName = method.getName();
+        final boolean runEntry = "run".equals(methodName);
+        final boolean executeEntry =
+                methodName.toLowerCase(java.util.Locale.ROOT).contains("execute");
+        final boolean headerMethod = "addRequestHeaders".equals(methodName);
+        final boolean canReturnVoid = method.getReturnType() == void.class;
 
         hook(method)
                 .setId(id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
                     long startedNs = SystemClock.elapsedRealtimeNanos();
+                    Object thisObject = chain.getThisObject();
+                    Context targetContext = resolveTargetContext(thisObject);
+                    java.util.List<Object> args = chain.getArgs();
 
-                    if ("run".equals(method.getName())) {
-                        ProbeSnapshot snapshot =
-                                DownloadInfoInspector.inspect(chain.getThisObject());
+                    if (runEntry) {
+                        ProbeSnapshot snapshot = DownloadInfoInspector.inspect(thisObject);
                         emit(Log.INFO, "download start " + snapshot.toSafeLogString());
+
+                        EngineTelemetry.emit(
+                                targetContext,
+                                "HOOK_MAP",
+                                "hooks=" + providerHookCount
+                                        + " httpCandidates=" + providerConnectionCandidateCount
+                                        + " deopt=" + providerDeoptimizedCount
+                                        + " failed=" + providerDeoptFailedCount
+                                        + " :: " + providerHookInventory);
                     }
 
-                    if (transferCandidate) {
+                    if (executeEntry) {
+                        EngineTelemetry.emit(
+                                targetContext,
+                                "EXECUTE_ENTRY",
+                                method.toGenericString()
+                                        + " args=[" + describeArgs(args) + "]");
+                    }
+
+                    HttpURLConnection connection = findHttpConnection(args);
+
+                    if (connection != null && !headerMethod && canReturnVoid) {
+                        String signature = method.toGenericString();
+                        EngineTelemetry.emit(
+                                targetContext,
+                                "HTTP_METHOD_ENTRY",
+                                signature + " args=[" + describeArgs(args) + "]");
+                        emit(Log.INFO, "HTTP-bearing method entered signature="
+                                + signature + " declaredHttp=" + declaredConnection
+                                + " args=[" + describeArgs(args) + "]");
+
                         try {
-                            java.util.List<Object> args = chain.getArgs();
-                            Context targetContext = resolveTargetContext(chain.getThisObject());
-
-                            StringBuilder argTypes = new StringBuilder();
-                            HttpURLConnection connection = null;
-                            for (int i = 0; i < args.size(); i++) {
-                                Object arg = args.get(i);
-                                if (i > 0) {
-                                    argTypes.append(", ");
-                                }
-                                argTypes.append(arg == null
-                                        ? "null"
-                                        : arg.getClass().getName());
-                                if (arg instanceof HttpURLConnection) {
-                                    connection = (HttpURLConnection) arg;
-                                }
-                            }
-
-                            String signature = method.toGenericString();
-                            EngineTelemetry.emit(
-                                    targetContext,
-                                    "TRANSFER_ENTRY",
-                                    signature + " args=[" + argTypes + "]");
-                            emit(Log.INFO, "transferData entered signature="
-                                    + signature + " args=[" + argTypes + "]");
-
-                            if (connection == null) {
+                            if (SegmentedTransfer.tryAccelerate(thisObject, connection)) {
                                 EngineTelemetry.emit(
                                         targetContext,
-                                        "NO_CONNECTION_ARG",
+                                        "INTERCEPTED",
                                         signature);
-                            } else if (SegmentedTransfer.tryAccelerate(
-                                    chain.getThisObject(),
-                                    connection)) {
-                                emit(Log.INFO, "transferData handled by segmented engine");
+                                emit(Log.INFO,
+                                        "HTTP-bearing method handled by segmented engine");
                                 return null;
                             }
                         } catch (Throwable t) {
+                            EngineTelemetry.emit(
+                                    targetContext,
+                                    "ERROR",
+                                    "interceptor: " + t.getClass().getSimpleName()
+                                            + ": " + String.valueOf(t.getMessage()));
                             emit(Log.WARN,
                                     "segmented engine interceptor failed; native fallback", t);
                         }
@@ -394,13 +470,31 @@ public final class AcceleratorModule extends XposedModule {
                     } finally {
                         long elapsedMs =
                                 (SystemClock.elapsedRealtimeNanos() - startedNs) / 1_000_000L;
-                        if ("run".equals(method.getName())
-                                || "executeDownload".equals(method.getName())) {
+                        if (runEntry || executeEntry) {
                             emit(Log.DEBUG,
-                                    method.getName() + " finished in " + elapsedMs + " ms");
+                                    methodName + " finished in " + elapsedMs + " ms");
                         }
                     }
                 });
+    }
+
+    private HttpURLConnection findHttpConnection(java.util.List<Object> args) {
+        for (Object arg : args) {
+            if (arg instanceof HttpURLConnection) {
+                return (HttpURLConnection) arg;
+            }
+        }
+        return null;
+    }
+
+    private String describeArgs(java.util.List<Object> args) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < args.size(); i++) {
+            if (i > 0) out.append(", ");
+            Object arg = args.get(i);
+            out.append(arg == null ? "null" : arg.getClass().getName());
+        }
+        return out.toString();
     }
 
     private Context resolveTargetContext(Object thread) {
