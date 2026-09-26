@@ -28,9 +28,8 @@ import io.github.libxposed.service.XposedService;
 /**
  * Runtime diagnostics UI backed by XposedService API 102.
  *
- * getRunningTargets() + loadedVersionCode + target state are the authoritative
- * activation signal. RemotePreferences are intentionally not used for target
- * heartbeats because injected module processes only receive a read-only view.
+ * getRunningTargets() + loadedVersionCode + target state are authoritative for
+ * live processes. DownloadProvider and Downloads UI are allowed to be dormant.
  */
 public final class MainActivity extends Activity {
     private static final int BG = Color.rgb(245, 246, 250);
@@ -50,6 +49,8 @@ public final class MainActivity extends Activity {
     private StatusCard providerCard;
     private StatusCard downloadsUiCard;
     private StatusCard systemUiCard;
+    private Button selfTestButton;
+    private TextView selfTestStatus;
     private Button refreshButton;
 
     @Override
@@ -123,22 +124,55 @@ public final class MainActivity extends Activity {
         providerCard = new StatusCard(
                 "DownloadProvider",
                 "com.android.providers.downloads",
-                "真实下载传输与状态源",
-                false);
+                "真实下载传输与状态源 · 按需运行",
+                true,
+                "当前没有活动下载；运行自检可立即唤醒");
         downloadsUiCard = new StatusCard(
                 "Downloads UI",
                 "com.android.providers.downloads.ui",
                 "下载列表与控制界面 · 按需加载",
-                true);
+                true,
+                "界面进程未启动，不影响下载核心");
         systemUiCard = new StatusCard(
                 "SystemUI",
                 "com.android.systemui",
                 "通知与系统界面",
-                false);
+                false,
+                "");
 
         root.addView(providerCard.root, cardLp());
         root.addView(downloadsUiCard.root, cardLp());
         root.addView(systemUiCard.root, cardLp());
+
+        TextView testSection = text("下载链路自检", 16, TEXT, true);
+        LinearLayout.LayoutParams testSectionLp = wrap();
+        testSectionLp.topMargin = dp(18);
+        testSectionLp.bottomMargin = dp(10);
+        root.addView(testSection, testSectionLp);
+
+        LinearLayout testBox = cardContainer();
+        TextView testExplain = text(
+                "在本机 127.0.0.1 启动临时 HTTP/Range 服务器，再由 Android 原生 "
+                        + "DownloadManager 下载 1 MiB。不会使用公网流量。",
+                13, MUTED, false);
+        testExplain.setLineSpacing(0f, 1.15f);
+        testBox.addView(testExplain);
+
+        selfTestStatus = text("尚未运行", 13, MUTED, false);
+        LinearLayout.LayoutParams selfStatusLp = wrap();
+        selfStatusLp.topMargin = dp(10);
+        testBox.addView(selfTestStatus, selfStatusLp);
+
+        selfTestButton = new Button(this);
+        selfTestButton.setText("运行下载链路自检");
+        selfTestButton.setTextSize(15);
+        selfTestButton.setAllCaps(false);
+        selfTestButton.setOnClickListener(v -> runSelfTest());
+        LinearLayout.LayoutParams selfButtonLp = matchWrap();
+        selfButtonLp.topMargin = dp(12);
+        testBox.addView(selfTestButton, selfButtonLp);
+
+        root.addView(testBox, matchWrap());
 
         refreshButton = new Button(this);
         refreshButton.setText("刷新状态");
@@ -146,13 +180,13 @@ public final class MainActivity extends Activity {
         refreshButton.setAllCaps(false);
         refreshButton.setOnClickListener(v -> refresh());
         LinearLayout.LayoutParams buttonLp = matchWrap();
-        buttonLp.topMargin = dp(18);
+        buttonLp.topMargin = dp(14);
         root.addView(refreshButton, buttonLp);
 
         TextView note = text(
-                "状态以 LSPosed API 102 的 runningTargets 为准：Scope、目标 PID、"
-                        + "框架状态和 loadedVersionCode 全部一致时才显示“已加载”。"
-                        + "Downloads UI 是按需进程，未运行不影响下载核心激活。",
+                "状态以 LSPosed API 102 的 runningTargets 为准。DownloadProvider 和 "
+                        + "Downloads UI 都可能在空闲时退出，因此“不在运行”不等于模块失效；"
+                        + "SystemUI 为常驻校验点，下载链路自检用于临时唤醒 Provider 并验证真实传输。",
                 12, MUTED, false);
         note.setLineSpacing(0f, 1.18f);
         LinearLayout.LayoutParams noteLp = wrap();
@@ -160,6 +194,28 @@ public final class MainActivity extends Activity {
         root.addView(note, noteLp);
 
         return scroll;
+    }
+
+    private void runSelfTest() {
+        selfTestButton.setEnabled(false);
+        selfTestButton.setText("自检运行中…");
+        selfTestStatus.setText("正在准备本地 DownloadManager 测试");
+        selfTestStatus.setTextColor(AMBER);
+
+        DownloadSelfTest.run(this, (message, terminal, success) ->
+                runOnUiThread(() -> {
+                    selfTestStatus.setText(message);
+                    selfTestStatus.setTextColor(
+                            terminal ? (success ? GREEN : RED) : AMBER);
+
+                    if (terminal) {
+                        selfTestButton.setEnabled(true);
+                        selfTestButton.setText("重新运行下载链路自检");
+                        refresh();
+                    } else {
+                        mainHandler.postDelayed(this::refresh, 250L);
+                    }
+                }));
     }
 
     private void refresh() {
@@ -252,14 +308,12 @@ public final class MainActivity extends Activity {
             return null;
         }
 
-        // Exact process name is the strongest match.
         for (HookedTarget target : targets) {
             if (packageName.equals(target.getProcessName())) {
                 return target;
             }
         }
 
-        // Downloads UI and other system packages may live in a shared OEM process.
         if (packageUid >= 0) {
             for (HookedTarget target : targets) {
                 if (target.getUid() == packageUid) {
@@ -308,22 +362,23 @@ public final class MainActivity extends Activity {
                     + (report.apiVersion >= XposedService.API_102 ? "可用" : "不可用"));
 
             boolean providerReady = report.provider.currentGeneration;
+            boolean providerDormant = report.provider.inScope && !report.provider.running;
             boolean systemUiReady = report.systemUi.currentGeneration;
             boolean downloadsUiReady = report.downloadsUi.currentGeneration;
 
-            if (providerReady && systemUiReady) {
-                if (downloadsUiReady) {
-                    overall.setText("已激活 · 3/3 当前目标已加载");
-                } else if (report.downloadsUi.inScope && !report.downloadsUi.running) {
-                    overall.setText("核心已激活 · Downloads UI 按需加载");
+            if (systemUiReady && (providerReady || providerDormant)) {
+                if (providerReady && downloadsUiReady) {
+                    overall.setText("已激活 · 当前三个目标均已加载");
+                } else if (providerReady) {
+                    overall.setText("核心已激活 · Provider 正在运行");
                 } else {
-                    overall.setText("核心已激活 · 2/2 常驻目标已加载");
+                    overall.setText("模块已就绪 · Provider 待下载唤醒");
                 }
                 overall.setTextColor(GREEN);
             } else {
                 int core = (providerReady ? 1 : 0) + (systemUiReady ? 1 : 0);
                 if (core > 0) {
-                    overall.setText("部分激活 · " + core + "/2 常驻目标已加载");
+                    overall.setText("部分激活 · " + core + "/2 核心运行目标已加载");
                 } else {
                     overall.setText("框架已连接 · 等待核心目标加载");
                 }
@@ -342,10 +397,17 @@ public final class MainActivity extends Activity {
         final TextView packageName;
         final TextView state;
         final TextView detail;
-        final boolean optional;
+        final boolean dormantOk;
+        final String dormantDetail;
 
-        StatusCard(String title, String pkg, String description, boolean optional) {
-            this.optional = optional;
+        StatusCard(
+                String title,
+                String pkg,
+                String description,
+                boolean dormantOk,
+                String dormantDetail) {
+            this.dormantOk = dormantOk;
+            this.dormantDetail = dormantDetail;
             root = cardContainer();
 
             name = text(title, 17, TEXT, true);
@@ -389,10 +451,12 @@ public final class MainActivity extends Activity {
             }
 
             if (!s.running) {
-                state.setText(optional ? "Scope 已启用 · 当前未运行" : "Scope 已启用 · 等待进程");
-                state.setTextColor(optional ? MUTED : AMBER);
-                detail.setText(optional
-                        ? "按需目标未启动，不影响下载核心"
+                state.setText(dormantOk
+                        ? "Scope 已启用 · 当前休眠"
+                        : "Scope 已启用 · 等待进程");
+                state.setTextColor(dormantOk ? MUTED : AMBER);
+                detail.setText(dormantOk
+                        ? dormantDetail
                         : "目标进程当前没有出现在 runningTargets");
                 return;
             }
