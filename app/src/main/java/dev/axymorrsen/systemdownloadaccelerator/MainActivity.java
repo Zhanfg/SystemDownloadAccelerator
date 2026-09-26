@@ -110,12 +110,14 @@ public final class MainActivity extends Activity {
         setContentView(buildUi());
         ModuleApp.addListener(serviceListener);
         registerEngineReceiver();
+        loadPersistedEvents();
         refresh();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        loadPersistedEvents();
         refresh();
     }
 
@@ -144,6 +146,32 @@ public final class MainActivity extends Activity {
             registerReceiver(engineReceiver, filter);
         }
         engineReceiverRegistered = true;
+    }
+
+    private void loadPersistedEvents() {
+        if (engineDiag == null) {
+            return;
+        }
+
+        java.util.List<String> persisted =
+                TelemetryProvider.readEvents(getApplicationContext());
+
+        engineEvents.clear();
+        int start = Math.max(0, persisted.size() - 8);
+        for (int i = start; i < persisted.size(); i++) {
+            engineEvents.addLast(persisted.get(i));
+        }
+
+        if (engineEvents.isEmpty()) {
+            return;
+        }
+
+        StringBuilder history = new StringBuilder("引擎事件：");
+        for (String item : engineEvents) {
+            history.append("\n").append(item);
+        }
+        engineDiag.setText(history.toString());
+        engineDiag.setTextColor(AMBER);
     }
 
     private View buildUi() {
@@ -309,6 +337,7 @@ public final class MainActivity extends Activity {
         selfTestButton.setText("自检运行中…");
         selfTestStatus.setText("正在准备本地 DownloadManager 测试");
         selfTestStatus.setTextColor(AMBER);
+        TelemetryProvider.clearEvents(getApplicationContext());
         engineEvents.clear();
         engineDiag.setText("引擎事件：\n等待连接流接管");
         engineDiag.setTextColor(MUTED);
@@ -322,6 +351,7 @@ public final class MainActivity extends Activity {
                     if (terminal) {
                         selfTestButton.setEnabled(true);
                         selfTestButton.setText("重新运行下载链路自检");
+                        loadPersistedEvents();
                         refresh();
                     } else {
                         mainHandler.postDelayed(this::refresh, 250L);

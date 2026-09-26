@@ -1,5 +1,6 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
+import android.app.Application;
 import android.content.Context;
 import android.net.Network;
 import android.os.Build;
@@ -14,7 +15,9 @@ import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -58,6 +61,8 @@ public final class AcceleratorModule extends XposedModule {
             ConcurrentHashMap.newKeySet();
     private final Set<String> dynamicFactoryHooks =
             ConcurrentHashMap.newKeySet();
+    private final Map<Object, Network> httpEngineNetworks =
+            java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
     private int providerHookCount;
     private int providerDeoptimizedCount;
@@ -174,6 +179,7 @@ public final class AcceleratorModule extends XposedModule {
         hookedIds.clear();
         connectionClassHooks.clear();
         dynamicFactoryHooks.clear();
+        httpEngineNetworks.clear();
     }
 
     private ClassLoader recoverTargetClassLoader(
@@ -228,6 +234,14 @@ public final class AcceleratorModule extends XposedModule {
             return providerHookCount;
         }
 
+        Context processContext = resolveProcessContext();
+        ConnectionRegistry.initialize(processContext);
+        EngineTelemetry.emit(
+                processContext,
+                "ADAPTER_INSTALL",
+                "process=" + processName
+                        + " version=" + BuildConfig.VERSION_CODE);
+
         try {
             Class<?> downloadThread =
                     classLoader.loadClass(
@@ -236,31 +250,67 @@ public final class AcceleratorModule extends XposedModule {
             providerDeoptimizedCount =
                     deoptimizeDownloadThread(downloadThread);
 
-            int count = 0;
+            int runHooks = 0;
             for (Method method : downloadThread.getDeclaredMethods()) {
                 if (!"run".equals(method.getName())
                         || method.getParameterCount() != 0) {
                     continue;
                 }
-                method.setAccessible(true);
-                installRunContextHook(method);
-                count++;
+                try {
+                    method.setAccessible(true);
+                    installRunContextHook(method);
+                    runHooks++;
+                } catch (Throwable t) {
+                    emit(Log.WARN,
+                            "run hook install failed "
+                                    + method.toGenericString(),
+                            t);
+                    EngineTelemetry.emit(
+                            processContext,
+                            "HOOK_FAIL",
+                            "DownloadThread.run: "
+                                    + t.getClass().getSimpleName()
+                                    + ": "
+                                    + String.valueOf(t.getMessage()));
+                }
             }
 
-            count += installNetworkOpenHooks();
-            count += installUrlOpenHooks();
+            int networkHooks =
+                    installNetworkOpenHooks(processContext);
+            int urlHooks =
+                    installUrlOpenHooks(processContext);
+            int httpEngineHooks =
+                    installPlatformHttpEngineHooks(processContext);
 
-            providerHookCount = count;
-            emit(Log.INFO,
-                    "provider adapter installed hooks=" + count
-                            + " deoptimized=" + providerDeoptimizedCount);
-            return count;
+            providerHookCount =
+                    runHooks + networkHooks + urlHooks + httpEngineHooks;
+
+            String summary =
+                    "hooks=" + providerHookCount
+                            + " run=" + runHooks
+                            + " network=" + networkHooks
+                            + " url=" + urlHooks
+                            + " httpEngine=" + httpEngineHooks
+                            + " deopt=" + providerDeoptimizedCount;
+
+            emit(Log.INFO, "provider adapter installed " + summary);
+            EngineTelemetry.emit(
+                    processContext,
+                    "ADAPTER_READY",
+                    summary);
+            return providerHookCount;
         } catch (Throwable t) {
             providerInstalled.set(false);
             providerHookCount = 0;
             emit(Log.ERROR,
                     "provider adapter install failed; native path preserved",
                     t);
+            EngineTelemetry.emit(
+                    processContext,
+                    "ADAPTER_ERROR",
+                    t.getClass().getSimpleName()
+                            + ": "
+                            + String.valueOf(t.getMessage()));
             return 0;
         }
     }
@@ -315,7 +365,7 @@ public final class AcceleratorModule extends XposedModule {
                 });
     }
 
-    private int installNetworkOpenHooks() {
+    private int installNetworkOpenHooks(Context processContext) {
         int count = 0;
         for (Method method : Network.class.getDeclaredMethods()) {
             if (!"openConnection".equals(method.getName())) {
@@ -323,66 +373,203 @@ public final class AcceleratorModule extends XposedModule {
             }
 
             Class<?>[] params = method.getParameterTypes();
-            if (params.length < 1
-                    || params[0] != URL.class) {
+            if (params.length < 1 || params[0] != URL.class) {
                 continue;
             }
 
-            method.setAccessible(true);
-            String id = ID_PREFIX + "network:" + method.toGenericString();
-            if (!hookedIds.add(id)) {
-                continue;
-            }
+            try {
+                method.setAccessible(true);
+                String id =
+                        ID_PREFIX + "network:" + method.toGenericString();
+                if (!hookedIds.add(id)) {
+                    continue;
+                }
 
-            hook(method)
-                    .setId(id)
-                    .setExceptionMode(
-                            XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        if (!ConnectionRegistry.isInternalRequest()
-                                && result instanceof HttpURLConnection
-                                && chain.getThisObject() instanceof Network) {
-                            observeConnection(
-                                    (HttpURLConnection) result,
-                                    (Network) chain.getThisObject());
-                        }
-                        return result;
-                    });
-            count++;
+                hook(method)
+                        .setId(id)
+                        .setExceptionMode(
+                                XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            if (!ConnectionRegistry.isInternalRequest()
+                                    && result instanceof HttpURLConnection
+                                    && chain.getThisObject() instanceof Network) {
+                                observeConnection(
+                                        (HttpURLConnection) result,
+                                        (Network) chain.getThisObject());
+                            }
+                            return result;
+                        });
+                count++;
+            } catch (Throwable t) {
+                emit(Log.WARN,
+                        "Network.openConnection hook failed "
+                                + method.toGenericString(),
+                        t);
+                EngineTelemetry.emit(
+                        processContext,
+                        "HOOK_FAIL",
+                        "Network.openConnection: "
+                                + t.getClass().getSimpleName()
+                                + ": "
+                                + String.valueOf(t.getMessage()));
+            }
         }
         return count;
     }
 
-    private int installUrlOpenHooks() {
+    private int installUrlOpenHooks(Context processContext) {
         int count = 0;
         for (Method method : URL.class.getDeclaredMethods()) {
             if (!"openConnection".equals(method.getName())) {
                 continue;
             }
 
-            method.setAccessible(true);
-            String id = ID_PREFIX + "url:" + method.toGenericString();
-            if (!hookedIds.add(id)) {
+            try {
+                method.setAccessible(true);
+                String id =
+                        ID_PREFIX + "url:" + method.toGenericString();
+                if (!hookedIds.add(id)) {
+                    continue;
+                }
+
+                hook(method)
+                        .setId(id)
+                        .setExceptionMode(
+                                XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            if (!ConnectionRegistry.isInternalRequest()
+                                    && result instanceof HttpURLConnection) {
+                                observeConnection(
+                                        (HttpURLConnection) result,
+                                        null);
+                            }
+                            return result;
+                        });
+                count++;
+            } catch (Throwable t) {
+                emit(Log.WARN,
+                        "URL.openConnection hook failed "
+                                + method.toGenericString(),
+                        t);
+                EngineTelemetry.emit(
+                        processContext,
+                        "HOOK_FAIL",
+                        "URL.openConnection: "
+                                + t.getClass().getSimpleName()
+                                + ": "
+                                + String.valueOf(t.getMessage()));
+            }
+        }
+        return count;
+    }
+
+    private int installPlatformHttpEngineHooks(Context processContext) {
+        Class<?> engineClass;
+        try {
+            engineClass = Class.forName("android.net.http.HttpEngine");
+        } catch (Throwable unavailable) {
+            EngineTelemetry.emit(
+                    processContext,
+                    "HTTPENGINE",
+                    "platform HttpEngine class unavailable");
+            return 0;
+        }
+
+        int count = 0;
+        for (Method method : engineClass.getMethods()) {
+            String name = method.getName();
+
+            if ("bindToNetwork".equals(name)
+                    && method.getParameterCount() == 1
+                    && method.getParameterTypes()[0] == Network.class) {
+                try {
+                    method.setAccessible(true);
+                    String id =
+                            ID_PREFIX + "httpengine-bind:"
+                                    + method.toGenericString();
+                    if (hookedIds.add(id)) {
+                        hook(method)
+                                .setId(id)
+                                .setExceptionMode(
+                                        XposedInterface.ExceptionMode.PROTECTIVE)
+                                .intercept(chain -> {
+                                    Object result = chain.proceed();
+                                    java.util.List<Object> args =
+                                            chain.getArgs();
+                                    if (!args.isEmpty()
+                                            && args.get(0) instanceof Network) {
+                                        httpEngineNetworks.put(
+                                                chain.getThisObject(),
+                                                (Network) args.get(0));
+                                    }
+                                    return result;
+                                });
+                        count++;
+                    }
+                } catch (Throwable t) {
+                    EngineTelemetry.emit(
+                            processContext,
+                            "HOOK_FAIL",
+                            "HttpEngine.bindToNetwork: "
+                                    + t.getClass().getSimpleName()
+                                    + ": "
+                                    + String.valueOf(t.getMessage()));
+                }
                 continue;
             }
 
-            hook(method)
-                    .setId(id)
-                    .setExceptionMode(
-                            XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        if (!ConnectionRegistry.isInternalRequest()
-                                && result instanceof HttpURLConnection) {
-                            observeConnection(
-                                    (HttpURLConnection) result,
-                                    null);
-                        }
-                        return result;
-                    });
-            count++;
+            if (!"openConnection".equals(name)) {
+                continue;
+            }
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length < 1 || params[0] != URL.class) {
+                continue;
+            }
+
+            try {
+                method.setAccessible(true);
+                String id =
+                        ID_PREFIX + "httpengine-open:"
+                                + method.toGenericString();
+                if (!hookedIds.add(id)) {
+                    continue;
+                }
+
+                hook(method)
+                        .setId(id)
+                        .setExceptionMode(
+                                XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            if (!ConnectionRegistry.isInternalRequest()
+                                    && result instanceof HttpURLConnection) {
+                                Network network =
+                                        httpEngineNetworks.get(
+                                                chain.getThisObject());
+                                observeConnection(
+                                        (HttpURLConnection) result,
+                                        network);
+                            }
+                            return result;
+                        });
+                count++;
+            } catch (Throwable t) {
+                EngineTelemetry.emit(
+                        processContext,
+                        "HOOK_FAIL",
+                        "HttpEngine.openConnection: "
+                                + t.getClass().getSimpleName()
+                                + ": "
+                                + String.valueOf(t.getMessage()));
+            }
         }
+
+        EngineTelemetry.emit(
+                processContext,
+                "HTTPENGINE",
+                "platform hooks=" + count);
         return count;
     }
 
@@ -560,6 +747,36 @@ public final class AcceleratorModule extends XposedModule {
                     }
                     return result;
                 });
+    }
+
+    private Context resolveProcessContext() {
+        try {
+            Class<?> activityThread =
+                    Class.forName("android.app.ActivityThread");
+            Method currentApplication =
+                    activityThread.getDeclaredMethod("currentApplication");
+            currentApplication.setAccessible(true);
+            Object app = currentApplication.invoke(null);
+            if (app instanceof Context) {
+                return (Context) app;
+            }
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            Class<?> appGlobals =
+                    Class.forName("android.app.AppGlobals");
+            Method initial =
+                    appGlobals.getDeclaredMethod("getInitialApplication");
+            initial.setAccessible(true);
+            Object app = initial.invoke(null);
+            if (app instanceof Context) {
+                return (Context) app;
+            }
+        } catch (Throwable ignored) {
+        }
+
+        return ConnectionRegistry.processContext();
     }
 
     private ConnectionRegistry.ProviderExecution resolveProviderExecution(

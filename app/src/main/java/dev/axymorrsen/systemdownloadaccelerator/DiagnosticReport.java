@@ -95,11 +95,22 @@ final class DiagnosticReport {
         appendHeader(out, "Self-test");
         append(out, "status", selfTestStatus == null ? "(none)" : selfTestStatus);
 
-        out.append("engine_events:\n");
+        out.append("engine_events_ui:\n");
         if (engineEvents == null || engineEvents.isEmpty()) {
             out.append("  (none received)\n");
         } else {
             for (String event : engineEvents) {
+                out.append("  - ").append(sanitize(event)).append('\n');
+            }
+        }
+
+        out.append("engine_events_persistent:\n");
+        List<String> persistentEvents =
+                TelemetryProvider.readEvents(context);
+        if (persistentEvents.isEmpty()) {
+            out.append("  (none stored)\n");
+        } else {
+            for (String event : persistentEvents) {
                 out.append("  - ").append(sanitize(event)).append('\n');
             }
         }

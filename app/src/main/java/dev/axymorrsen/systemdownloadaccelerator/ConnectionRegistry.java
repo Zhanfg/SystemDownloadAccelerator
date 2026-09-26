@@ -14,8 +14,7 @@ import java.util.WeakHashMap;
 
 /**
  * Process-local metadata for HttpURLConnection instances created by
- * DownloadProvider. Weak keys avoid extending the lifetime of platform
- * connections.
+ * DownloadProvider. Weak keys avoid extending platform connection lifetime.
  */
 final class ConnectionRegistry {
     static final class ProviderExecution {
@@ -70,11 +69,6 @@ final class ConnectionRegistry {
             return Collections.unmodifiableMap(copy);
         }
 
-        synchronized String firstHeader(String name) {
-            List<String> values = headers.get(normalize(name));
-            return values == null || values.isEmpty() ? null : values.get(0);
-        }
-
         private static String normalize(String name) {
             return name.trim().toLowerCase(Locale.ROOT);
         }
@@ -88,10 +82,26 @@ final class ConnectionRegistry {
     private static final Map<HttpURLConnection, Metadata> CONNECTIONS =
             Collections.synchronizedMap(new WeakHashMap<>());
 
+    private static volatile Context processContext;
+
     private ConnectionRegistry() {}
+
+    static void initialize(Context context) {
+        if (context != null) {
+            Context app = context.getApplicationContext();
+            processContext = app != null ? app : context;
+        }
+    }
+
+    static Context processContext() {
+        return processContext;
+    }
 
     static void enterProviderExecution(ProviderExecution execution) {
         CURRENT.set(execution);
+        if (execution != null && execution.context != null) {
+            initialize(execution.context);
+        }
     }
 
     static void leaveProviderExecution() {
@@ -127,10 +137,15 @@ final class ConnectionRegistry {
             HttpURLConnection connection,
             Network explicitNetwork) {
         ProviderExecution execution = CURRENT.get();
-        Context context = execution == null ? null : execution.context;
+
+        Context context = execution != null && execution.context != null
+                ? execution.context
+                : processContext;
+
         Network network = explicitNetwork != null
                 ? explicitNetwork
                 : execution == null ? null : execution.network;
+
         int uid = execution == null ? -1 : execution.requestingUid;
 
         Metadata metadata = new Metadata(context, network, uid);

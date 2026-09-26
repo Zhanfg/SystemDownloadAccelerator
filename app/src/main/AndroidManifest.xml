@@ -11,6 +11,12 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
+        <provider
+            android:name=".TelemetryProvider"
+            android:authorities="dev.axymorrsen.systemdownloadaccelerator.telemetry"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
