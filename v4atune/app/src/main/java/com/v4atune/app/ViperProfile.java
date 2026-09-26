@@ -29,6 +29,68 @@ final class ViperProfile {
 
     private ViperProfile() {}
 
+
+    static JSONObject baseline() throws Exception {
+        JSONObject root = new JSONObject();
+        root.put("schemaVersion", 2.1);
+        root.put("name", "V4ATune Measurement Baseline");
+        root.put("createdAt", System.currentTimeMillis());
+        root.put("masterLimiter", obj("threshold", 1.0, "outputVolume", 1.0, "channelPan", 0.0));
+        root.put("playbackGainControl", obj("enable", false, "strength", 1.0, "maxGain", 1.0, "outputThreshold", 1.0));
+        root.put("lufs", obj("enable", false, "target", -16.0, "maxGain", 3.0, "speed", 0));
+        root.put("fetCompressor", obj(
+                "enable", false, "threshold", compDb(-18.0), "ratio", compRatio(1.0),
+                "kneeAuto", true, "knee", 0.0, "kneeMulti", 0.0,
+                "gainAuto", true, "gain", 0.0, "attackAuto", true,
+                "attack", 0.020, "maxAttack", 0.080, "releaseAuto", true,
+                "release", 0.050, "maxRelease", 0.100, "crest", 0.100,
+                "adapt", Math.pow(4.0, .5), "noClip", true));
+        root.put("multibandCompressor", obj(
+                "enable", false, "bandEnables", arr(true,true,true,true,true),
+                "crossovers", arr(120,500,4000,8000),
+                "thresholds", arr(compDb(-18),compDb(-18),compDb(-18),compDb(-18),compDb(-18)),
+                "ratios", arr(compRatio(.5),compRatio(.5),compRatio(.5),compRatio(.5),compRatio(.5)),
+                "gains", arr(0.0,0.0,0.0,0.0,0.0),
+                "knees", arr(0.0,0.0,0.0,0.0,0.0),
+                "kneeMultis", arr(0.0,0.0,0.0,0.0,0.0),
+                "attacks", arr(.001,.001,.001,.001,.001),
+                "maxAttacks", arr(.044,.044,.044,.044,.044),
+                "releases", arr(.100,.100,.100,.100,.100),
+                "maxReleases", arr(.200,.200,.200,.200,.200),
+                "crests", arr(.100,.100,.100,.100,.100),
+                "adapts", arr(Math.pow(4,.5),Math.pow(4,.5),Math.pow(4,.5),Math.pow(4,.5),Math.pow(4,.5)),
+                "kneeAutos", arr(true,true,true,true,true),
+                "gainAutos", arr(true,true,true,true,true),
+                "attackAutos", arr(true,true,true,true,true),
+                "releaseAutos", arr(true,true,true,true,true),
+                "noClips", arr(true,true,true,true,true)));
+        root.put("ddc", obj("enable", false, "device", ""));
+        root.put("spectrumExtension", obj("enable", false, "strength", 7600, "exciter", 0.0));
+        root.put("equalizer", obj("enable", false, "bandCount", 10,
+                "bands", arr(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0), "presetId", JSONObject.NULL));
+        root.put("dynamicEq", obj("enable", false, "bandCount", 3,
+                "freqs", arr(60,150,400), "qs", arr(1.0,1.0,1.5), "gains", arr(0.0,0.0,0.0),
+                "thresholds", arr(-20.0,-20.0,-20.0), "attacks", arr(10.0,10.0,10.0),
+                "releases", arr(100.0,100.0,100.0), "filterTypes", arr(0,0,0)));
+        root.put("convolver", obj("enable", false, "kernelFile", "", "crossChannel", 0.0));
+        root.put("fieldSurround", obj("enable", false, "widening", 0.0, "midImage", 1.5, "depth", 200));
+        root.put("diffSurround", obj("enable", false, "delay", 5.0, "reverse", false, "wetDryMix", 1.0, "lpCutoff", 0));
+        root.put("stereoImager", obj("enable", false, "lowWidth", 1.0, "midWidth", 1.0, "highWidth", 1.0, "lowCrossover", 200, "highCrossover", 4000));
+        root.put("headphoneSurround", obj("enable", false, "quality", 0));
+        root.put("reverb", obj("enable", false, "roomSize", 0.0, "width", 0.0, "damp", .5, "wet", 0.0, "dry", 1.0));
+        root.put("dynamicSystem", obj("enable", false, "presetId", JSONObject.NULL, "device", 0, "strength", 1.0,
+                "xLow", 100, "xHigh", 5600, "yLow", 40, "yHigh", 80, "sideGainLow", .5, "sideGainHigh", .5));
+        root.put("psychoacousticBass", obj("enable", false, "cutoff", 80, "intensity", .5, "harmonicOrder", 3, "originalLevel", 1.0));
+        root.put("bass", obj("enable", false, "mode", 0, "frequency", 60, "gain", .5, "antiPop", false));
+        root.put("bassMono", obj("enable", false, "mode", 0, "frequency", 60, "gain", .5, "antiPop", false));
+        root.put("clarity", obj("enable", false, "mode", 0, "gain", .5));
+        root.put("cure", obj("enable", false, "crossfeedPreset", 0));
+        root.put("tubeSimulator", obj("enable", false));
+        root.put("analogX", obj("enable", false, "mode", 0));
+        root.put("speakerCorrection", obj("enable", false));
+        return root;
+    }
+
     static Plan build(Dsp.Analysis a,
                       AudioCalibrator.Result measurement,
                       TuneConfig config,
