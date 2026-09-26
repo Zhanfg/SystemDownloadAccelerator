@@ -275,7 +275,7 @@ final class Dsp {
         return 0.0;
     }
 
-    static File writeCorrectionFir(File out, Analysis a) throws Exception {
+    static File writeCorrectionFir(File out, Analysis a, double scale) throws Exception {
         final int n = 1024;
         double[] re = new double[n];
         double[] im = new double[n];
@@ -285,7 +285,7 @@ final class Dsp {
             double gainDb;
             if (f < MEASURE_FREQS[0]) gainDb = 0.0;
             else if (f > MEASURE_FREQS[MEASURE_FREQS.length - 1]) gainDb = 0.0;
-            else gainDb = interpolateLogFreq(a.bands, a.correctionAtBands, f);
+            else gainDb = interpolateLogFreq(a.bands, a.correctionAtBands, f) * Math.max(0.0, Math.min(1.0, scale));
             double amp = Math.pow(10.0, gainDb / 20.0);
             re[k] = amp;
             if (k > 0 && k < n / 2) re[n - k] = amp;
