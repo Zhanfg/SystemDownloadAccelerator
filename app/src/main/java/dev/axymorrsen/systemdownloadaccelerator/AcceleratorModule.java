@@ -346,13 +346,13 @@ public final class AcceleratorModule extends XposedModule {
 
                     if (transferCandidate) {
                         try {
-                            Object[] args = chain.getArgs();
+                            java.util.List<Object> args = chain.getArgs();
                             Context targetContext = resolveTargetContext(chain.getThisObject());
 
                             StringBuilder argTypes = new StringBuilder();
                             HttpURLConnection connection = null;
-                            for (int i = 0; i < args.length; i++) {
-                                Object arg = args[i];
+                            for (int i = 0; i < args.size(); i++) {
+                                Object arg = args.get(i);
                                 if (i > 0) {
                                     argTypes.append(", ");
                                 }
