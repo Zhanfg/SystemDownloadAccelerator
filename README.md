@@ -179,3 +179,8 @@ unmetered Wi-Fi/Ethernet. The benchmark now treats this conservatively:
 - non-VPN metered networks remain blocked by default;
 - adaptive concurrency keeps the transport classified as VPN while using a
   uniquely verified unmetered physical underlay as the cost hint.
+
+
+## Provider generation preflight
+
+Before correctness or real-network tests, the app now verifies the live DownloadProvider HookedTarget generation. A running stale target is blocked with its loadedVersion/current version instead of being misreported as a Range-engine failure. Dormant providers remain allowed because a fresh process will load the current module generation when the test wakes it.

@@ -428,6 +428,24 @@ public final class MainActivity extends Activity {
 
     private void runSelfTest() {
         selfTestButton.setEnabled(false);
+        selfTestButton.setText("正在确认 Provider 版本…");
+        selfTestStatus.setText("正在确认 DownloadProvider 是否运行当前 Hook generation");
+        selfTestStatus.setTextColor(AMBER);
+
+        requireCurrentProviderGeneration(
+                "下载链路自检",
+                () -> startSelfTest(),
+                message -> {
+                    selfTestButton.setEnabled(true);
+                    selfTestButton.setText("重新运行下载链路自检");
+                    selfTestStatus.setText(message);
+                    selfTestStatus.setTextColor(RED);
+                    refresh();
+                });
+    }
+
+    private void startSelfTest() {
+        selfTestButton.setEnabled(false);
         selfTestButton.setText("自检运行中…");
         selfTestStatus.setText("正在准备本地 DownloadManager 测试");
         selfTestStatus.setTextColor(AMBER);
@@ -472,10 +490,29 @@ public final class MainActivity extends Activity {
             return;
         }
 
+        benchmarkButton.setEnabled(false);
+        benchmarkButton.setText("正在确认 Provider 版本…");
+        benchmarkStatus.setText("正在确认 DownloadProvider 是否运行当前 Hook generation");
+        benchmarkStatus.setTextColor(AMBER);
+
+        requireCurrentProviderGeneration(
+                "大文件性能测试",
+                () -> startBenchmark(),
+                message -> {
+                    benchmarkButton.setEnabled(true);
+                    benchmarkButton.setText("开始大文件性能测试");
+                    benchmarkStatus.setText(message);
+                    benchmarkStatus.setTextColor(RED);
+                    refresh();
+                });
+    }
+
+    private void startBenchmark() {
         String url = benchmarkUrl == null
                 ? ""
                 : benchmarkUrl.getText().toString().trim();
 
+        benchmarkButton.setEnabled(true);
         benchmarkButton.setText("取消性能测试");
         benchmarkStatus.setText("正在提交真实 DownloadManager 大文件测试…");
         benchmarkStatus.setTextColor(AMBER);
@@ -518,6 +555,58 @@ public final class MainActivity extends Activity {
                                 refresh();
                             }
                         }));
+    }
+
+    private interface ProviderGenerationFailure {
+        void onFailure(String message);
+    }
+
+    private void requireCurrentProviderGeneration(
+            String action,
+            Runnable onReady,
+            ProviderGenerationFailure onFailure) {
+        new Thread(() -> {
+            StatusReport report = queryStatus();
+            String failure = null;
+
+            if (!report.serviceConnected) {
+                failure = "LSPosed 服务未连接，无法开始" + action;
+            } else if (report.error != null) {
+                failure = "无法确认 DownloadProvider 状态：" + report.error;
+            } else if (!report.provider.inScope) {
+                failure = "DownloadProvider 不在 LSPosed Scope 中";
+            } else if (report.provider.running
+                    && !report.provider.currentGeneration) {
+                failure =
+                        "DownloadProvider 仍运行旧 Hook generation：加载版本 "
+                                + report.provider.loadedVersion
+                                + "，当前版本 "
+                                + BuildConfig.VERSION_CODE
+                                + "。请先让 Provider 完成热重载/进程重启，"
+                                + "再运行"
+                                + action
+                                + "。";
+                EngineTelemetry.emit(
+                        getApplicationContext(),
+                        "PROVIDER_STALE",
+                        "action=" + action
+                                + " loaded="
+                                + report.provider.loadedVersion
+                                + " current="
+                                + BuildConfig.VERSION_CODE
+                                + " state="
+                                + report.provider.targetState);
+            }
+
+            final String result = failure;
+            runOnUiThread(() -> {
+                if (result == null) {
+                    onReady.run();
+                } else {
+                    onFailure.onFailure(result);
+                }
+            });
+        }, "sysdl-provider-preflight").start();
     }
 
     private String latestAdaptiveEvent() {
