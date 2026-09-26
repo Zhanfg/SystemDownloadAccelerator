@@ -60,6 +60,8 @@ final class ParallelRangeInputStream extends InputStream {
     private static final long TUNE_INTERVAL_MS = 2500L;
     private static final long CACHE_WINDOW_BYTES = 128L * 1024L * 1024L;
     private static final long MAX_BUFFERED_BYTES = 128L * 1024L * 1024L;
+    private static final long MIN_HEAD_RESERVE_BYTES = 8L * 1024L * 1024L;
+    private static final long MAX_HEAD_RESERVE_BYTES = 64L * 1024L * 1024L;
 
     private static final class PartState {
         final RangePart part;
@@ -107,7 +109,7 @@ final class ParallelRangeInputStream extends InputStream {
     private volatile int consumedPartIndex;
 
     private RandomAccessFile currentReader;
-    private long currentPartRead;
+    private volatile long currentPartRead;
 
     ParallelRangeInputStream(
             URL url,
@@ -394,8 +396,13 @@ final class ParallelRangeInputStream extends InputStream {
                                 + " bufferedMiB="
                                 + formatMiB(
                                         Math.max(0L, bytes - consumed))
+                                + " headMiB="
+                                + formatMiB(currentHeadUnreadBytes())
+                                + " futureMiB="
+                                + formatMiB(currentFutureBufferedBytes())
                                 + " workers="
-                                + controller.workers()
+                                + activeWorkers.get()
+                                + "->" + controller.workers()
                                 + "/" + maxWorkers);
             }
 
@@ -473,9 +480,11 @@ final class ParallelRangeInputStream extends InputStream {
     }
 
     private void workerLoop() {
+        boolean ownsActiveCount = true;
         try {
             while (!cancelled) {
-                if (activeWorkers.get() > controller.workers()) {
+                if (retireIfExcess()) {
+                    ownsActiveCount = false;
                     return;
                 }
 
@@ -486,15 +495,42 @@ final class ParallelRangeInputStream extends InputStream {
 
                 downloadPart(state);
 
-                if (activeWorkers.get() > controller.workers()) {
+                if (retireIfExcess()) {
+                    ownsActiveCount = false;
                     return;
                 }
             }
         } catch (Throwable t) {
             failSession(t);
         } finally {
-            activeWorkers.decrementAndGet();
+            if (ownsActiveCount) {
+                activeWorkers.decrementAndGet();
+            }
         }
+    }
+
+    /**
+     * Atomically retires at most the exact number of workers above the
+     * controller target. A plain activeWorkers > target check lets every
+     * worker observe the same stale count and all exit during rollback.
+     */
+    private boolean retireIfExcess() {
+        while (!cancelled) {
+            int active = activeWorkers.get();
+            int target = Math.max(1, controller.workers());
+            if (active <= target) {
+                return false;
+            }
+            if (activeWorkers.compareAndSet(active, active - 1)) {
+                EngineTelemetry.emit(
+                        metadata.context,
+                        "WORKER_RETIRE",
+                        "active=" + (active - 1)
+                                + " target=" + target);
+                return true;
+            }
+        }
+        return false;
     }
 
     private PartState claimPart() throws InterruptedException {
@@ -616,7 +652,7 @@ final class ParallelRangeInputStream extends InputStream {
         try (FileOutputStream out =
                      new FileOutputStream(state.file, true)) {
             while (!cancelled && remaining > 0L) {
-                waitForBufferBudget();
+                waitForBufferBudget(state);
 
                 int wanted = (int) Math.min(
                         (long) buffer.length,
@@ -638,11 +674,41 @@ final class ParallelRangeInputStream extends InputStream {
         }
     }
 
-    private void waitForBufferBudget() throws IOException {
-        while (!cancelled
-                && totalDownloaded.get() - totalConsumed.get()
-                >= MAX_BUFFERED_BYTES) {
+    private void waitForBufferBudget(PartState state)
+            throws IOException {
+        while (!cancelled) {
             throwIfInterruptedOrFailed();
+
+            int headIndex = consumedPartIndex;
+            long headReserve = headReserveBytes();
+            long totalBuffered = Math.max(
+                    0L,
+                    totalDownloaded.get() - totalConsumed.get());
+            long headUnread = currentHeadUnreadBytes();
+            long futureBuffered = Math.max(
+                    0L,
+                    totalBuffered - headUnread);
+
+            if (state.part.index <= headIndex) {
+                /*
+                 * The native DownloadManager can only advance through the head
+                 * part. Always reserve enough budget for it so future parts can
+                 * never fill the cache and starve the byte range the reader is
+                 * currently waiting on.
+                 */
+                if (headUnread < headReserve) {
+                    return;
+                }
+            } else {
+                long futureLimit = Math.max(
+                        MIN_HEAD_RESERVE_BYTES,
+                        MAX_BUFFERED_BYTES - headReserve);
+                if (futureBuffered < futureLimit
+                        && totalBuffered < MAX_BUFFERED_BYTES) {
+                    return;
+                }
+            }
+
             synchronized (schedulerLock) {
                 try {
                     schedulerLock.wait(50L);
@@ -653,6 +719,36 @@ final class ParallelRangeInputStream extends InputStream {
                 }
             }
         }
+    }
+
+    private long headReserveBytes() {
+        return Math.min(
+                MAX_HEAD_RESERVE_BYTES,
+                Math.max(
+                        MIN_HEAD_RESERVE_BYTES,
+                        Math.min(
+                                averagePartBytes,
+                                MAX_BUFFERED_BYTES / 2L)));
+    }
+
+    private long currentHeadUnreadBytes() {
+        int index = consumedPartIndex;
+        if (index < 0 || index >= states.size()) {
+            return 0L;
+        }
+        PartState head = states.get(index);
+        return Math.max(
+                0L,
+                head.downloaded.get() - currentPartRead);
+    }
+
+    private long currentFutureBufferedBytes() {
+        long totalBuffered = Math.max(
+                0L,
+                totalDownloaded.get() - totalConsumed.get());
+        return Math.max(
+                0L,
+                totalBuffered - currentHeadUnreadBytes());
     }
 
     private void ensureReader(PartState state) throws IOException {

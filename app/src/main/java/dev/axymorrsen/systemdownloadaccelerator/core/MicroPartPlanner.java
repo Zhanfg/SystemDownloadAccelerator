@@ -15,7 +15,10 @@ public final class MicroPartPlanner {
     public static final long MIB = 1024L * 1024L;
     public static final long GIB = 1024L * MIB;
     public static final int DEFAULT_PARTS_PER_WORKER = 2;
-    public static final int ABSOLUTE_MAX_PARTS = 1024;
+    public static final int ABSOLUTE_MAX_PARTS = 8192;
+
+    private static final long PIPELINE_BUDGET_BYTES = 128L * MIB;
+    private static final long MIN_DYNAMIC_PART_BYTES = 2L * MIB;
 
     private MicroPartPlanner() {}
 
@@ -46,7 +49,7 @@ public final class MicroPartPlanner {
 
         long size = totalLength - startOffset;
 
-        long targetPartBytes = targetPartBytes(size);
+        long targetPartBytes = targetPartBytes(size, workers);
         long byWorker =
                 Math.max(1L, (long) workers * partsPerWorker);
         long byTargetSize =
@@ -54,9 +57,6 @@ public final class MicroPartPlanner {
         long byMinimumSize =
                 Math.max(1L, (size + minPartBytes - 1L) / minPartBytes);
 
-        // Keep enough immutable work units for load balancing/ramping, but
-        // avoid thousands of tiny Range responses. Long-lived ranges preserve
-        // TCP congestion state and amortize HTTP/TLS overhead much better.
         long desired = Math.max(byWorker, byTargetSize);
         int partCount = (int) Math.max(
                 1L,
@@ -83,19 +83,32 @@ public final class MicroPartPlanner {
         return parts;
     }
 
-    private static long targetPartBytes(long size) {
+    private static long targetPartBytes(
+            long size,
+            int workers) {
+        long sizeTarget;
         if (size < 256L * MIB) {
-            return 16L * MIB;
+            sizeTarget = 16L * MIB;
+        } else if (size < 1L * GIB) {
+            sizeTarget = 32L * MIB;
+        } else if (size < 4L * GIB) {
+            sizeTarget = 64L * MIB;
+        } else if (size < 16L * GIB) {
+            sizeTarget = 128L * MIB;
+        } else {
+            sizeTarget = 256L * MIB;
         }
-        if (size < 1L * GIB) {
-            return 32L * MIB;
-        }
-        if (size < 4L * GIB) {
-            return 64L * MIB;
-        }
-        if (size < 16L * GIB) {
-            return 128L * MIB;
-        }
-        return 256L * MIB;
+
+        /*
+         * Keep each potential worker's immutable unit inside the bounded
+         * reorder budget. This avoids dozens of workers holding very large
+         * half-read Range responses when the native sequential consumer is
+         * slower than the network.
+         */
+        long concurrencyTarget = Math.max(
+                MIN_DYNAMIC_PART_BYTES,
+                PIPELINE_BUDGET_BYTES / Math.max(1, workers));
+
+        return Math.min(sizeTarget, concurrencyTarget);
     }
 }

@@ -24,14 +24,27 @@ public final class MicroPartPlannerTest {
     }
 
     @Test
-    public void multiGiBPlanKeepsLongLivedRangesForSixtyFourWorkers() {
+    public void onePointFiveGiBWithSixteenWorkersUsesPipelineSizedParts() {
+        long size = 1536L * MIB;
+        List<RangePart> parts =
+                MicroPartPlanner.plan(0L, size, 16);
+
+        assertEquals(192, parts.size());
+        assertEquals(8L * MIB, parts.get(0).length());
+        assertEquals(
+                size - 1L,
+                parts.get(parts.size() - 1).to);
+    }
+
+    @Test
+    public void sixteenGiBWithSixtyFourWorkersHasEnoughTwoMiBUnits() {
         long size = 16L * GIB;
         List<RangePart> parts =
                 MicroPartPlanner.plan(0L, size, 64);
 
-        assertEquals(128, parts.size());
+        assertEquals(8192, parts.size());
+        assertEquals(2L * MIB, parts.get(0).length());
         assertTrue(parts.size() <= MicroPartPlanner.ABSOLUTE_MAX_PARTS);
-        assertEquals(128L * MIB, parts.get(0).length());
         assertEquals(0L, parts.get(0).from);
         assertEquals(
                 size - 1L,
