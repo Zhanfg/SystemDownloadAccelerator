@@ -295,9 +295,7 @@ public final class AcceleratorModule extends XposedModule {
         String id = HOOK_PREFIX + method.toGenericString();
         hookedIds.add(id);
 
-        final boolean segmentedEntry = "transferData".equals(method.getName())
-                && method.getParameterCount() == 1
-                && method.getParameterTypes()[0] == HttpURLConnection.class;
+        final boolean transferCandidate = "transferData".equals(method.getName());
 
         hook(method)
                 .setId(id)
@@ -311,13 +309,20 @@ public final class AcceleratorModule extends XposedModule {
                         emit(Log.INFO, "download start " + snapshot.toSafeLogString());
                     }
 
-                    if (segmentedEntry) {
+                    if (transferCandidate) {
                         try {
-                            Object arg = chain.getArg(0);
-                            if (arg instanceof HttpURLConnection
+                            HttpURLConnection connection = null;
+                            for (Object arg : chain.getArgs()) {
+                                if (arg instanceof HttpURLConnection) {
+                                    connection = (HttpURLConnection) arg;
+                                    break;
+                                }
+                            }
+
+                            if (connection != null
                                     && SegmentedTransfer.tryAccelerate(
                                             chain.getThisObject(),
-                                            (HttpURLConnection) arg)) {
+                                            connection)) {
                                 emit(Log.INFO, "transferData handled by segmented engine");
                                 return null;
                             }
