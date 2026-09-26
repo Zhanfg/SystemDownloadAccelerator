@@ -60,6 +60,7 @@ enum class Component(val label: String) {
 
 data class TuneOptions(
     val scene: Scene = Scene.Reference,
+    val baseScene: Scene = Scene.Reference,
     val target: Target = Target.Reference,
     val mode: TestMode = TestMode.Standard,
     val eqBands: Int = 31,
@@ -94,6 +95,7 @@ object ScenePresets {
                 )
                 current.copy(
                     scene = scene,
+                    baseScene = scene,
                     target = Target.Reference,
                     mode = TestMode.Standard,
                     eqBands = 31,
@@ -118,6 +120,7 @@ object ScenePresets {
                 )
                 current.copy(
                     scene = scene,
+                    baseScene = scene,
                     target = Target.Balanced,
                     mode = TestMode.Standard,
                     eqBands = 31,
@@ -138,6 +141,7 @@ object ScenePresets {
                 )
                 current.copy(
                     scene = scene,
+                    baseScene = scene,
                     target = Target.Spatial,
                     mode = TestMode.Standard,
                     eqBands = 31,
@@ -164,6 +168,7 @@ object ScenePresets {
                 )
                 current.copy(
                     scene = scene,
+                    baseScene = scene,
                     target = Target.Spatial,
                     mode = TestMode.Quick,
                     eqBands = 31,
@@ -194,6 +199,7 @@ object ScenePresets {
                 )
                 current.copy(
                     scene = scene,
+                    baseScene = scene,
                     target = Target.Vocal,
                     mode = TestMode.Quick,
                     eqBands = 31,
@@ -223,6 +229,7 @@ object ScenePresets {
                 )
                 current.copy(
                     scene = scene,
+                    baseScene = scene,
                     target = Target.Loudness,
                     mode = TestMode.Quick,
                     eqBands = 31,
@@ -251,6 +258,7 @@ object ScenePresets {
                 )
                 current.copy(
                     scene = scene,
+                    baseScene = scene,
                     target = Target.Vocal,
                     mode = TestMode.Quick,
                     eqBands = 31,
@@ -263,6 +271,9 @@ object ScenePresets {
         }
     }
 }
+
+val TuneOptions.effectiveScene: Scene
+    get() = if (scene == Scene.Custom) baseScene else scene
 
 data class DriverStatus(
     val enabled: Boolean,
