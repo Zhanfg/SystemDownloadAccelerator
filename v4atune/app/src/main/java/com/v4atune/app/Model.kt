@@ -9,6 +9,17 @@ enum class Target(val label: String) {
     Loudness("高响度"),
 }
 
+enum class Scene(val label: String, val subtitle: String) {
+    Reference("参考", "低染色 · 平滑频响 · 保留动态"),
+    Music("音乐", "均衡耐听 · 低频体感 · 声像稳定"),
+    Movie("电影", "对白清晰 · 宽声场 · 低频氛围"),
+    Game("游戏", "低延迟 · 定位清晰 · 瞬态优先"),
+    Voice("人声", "对白 / 播客 · 中频可懂度优先"),
+    Outdoor("户外", "抗环境噪声 · 高响度 · 动态受控"),
+    Night("夜间", "低音量细节 · 克制低频 · 轻压缩"),
+    Custom("自定义", "手动覆盖场景默认策略"),
+}
+
 enum class Policy(val label: String) {
     Auto("自动"),
     On("开启并优化"),
@@ -48,12 +59,210 @@ enum class Component(val label: String) {
 }
 
 data class TuneOptions(
+    val scene: Scene = Scene.Reference,
     val target: Target = Target.Reference,
     val mode: TestMode = TestMode.Standard,
     val eqBands: Int = 31,
     val firTaps: Int = 4096,
     val policies: Map<Component, Policy> = Component.entries.associateWith { Policy.Auto },
 )
+
+object ScenePresets {
+    fun apply(scene: Scene, current: TuneOptions = TuneOptions()): TuneOptions {
+        if (scene == Scene.Custom) return current.copy(scene = Scene.Custom)
+
+        val p = Component.entries.associateWith { Policy.Auto }.toMutableMap()
+
+        fun off(vararg components: Component) = components.forEach { p[it] = Policy.Off }
+        fun on(vararg components: Component) = components.forEach { p[it] = Policy.On }
+
+        return when (scene) {
+            Scene.Reference -> {
+                off(
+                    Component.PlaybackGain,
+                    Component.Lufs,
+                    Component.FetCompressor,
+                    Component.MultibandCompressor,
+                    Component.FieldSurround,
+                    Component.DiffSurround,
+                    Component.HeadphoneSurround,
+                    Component.Reverb,
+                    Component.DynamicSystem,
+                    Component.Cure,
+                    Component.Tube,
+                    Component.AnalogX,
+                )
+                current.copy(
+                    scene = scene,
+                    target = Target.Reference,
+                    mode = TestMode.Standard,
+                    eqBands = 31,
+                    firTaps = 4096,
+                    policies = p,
+                )
+            }
+
+            Scene.Music -> {
+                off(
+                    Component.PlaybackGain,
+                    Component.Lufs,
+                    Component.FetCompressor,
+                    Component.MultibandCompressor,
+                    Component.DiffSurround,
+                    Component.HeadphoneSurround,
+                    Component.Reverb,
+                    Component.DynamicSystem,
+                    Component.Cure,
+                    Component.Tube,
+                    Component.AnalogX,
+                )
+                current.copy(
+                    scene = scene,
+                    target = Target.Balanced,
+                    mode = TestMode.Standard,
+                    eqBands = 31,
+                    firTaps = 4096,
+                    policies = p,
+                )
+            }
+
+            Scene.Movie -> {
+                on(Component.FieldSurround, Component.StereoImager)
+                off(
+                    Component.PlaybackGain,
+                    Component.FetCompressor,
+                    Component.HeadphoneSurround,
+                    Component.Cure,
+                    Component.Tube,
+                    Component.AnalogX,
+                )
+                current.copy(
+                    scene = scene,
+                    target = Target.Spatial,
+                    mode = TestMode.Standard,
+                    eqBands = 31,
+                    firTaps = 4096,
+                    policies = p,
+                )
+            }
+
+            Scene.Game -> {
+                on(Component.StereoImager, Component.Clarity)
+                off(
+                    Component.PlaybackGain,
+                    Component.Lufs,
+                    Component.FetCompressor,
+                    Component.MultibandCompressor,
+                    Component.Convolver,
+                    Component.DiffSurround,
+                    Component.HeadphoneSurround,
+                    Component.Reverb,
+                    Component.DynamicSystem,
+                    Component.Cure,
+                    Component.Tube,
+                    Component.AnalogX,
+                )
+                current.copy(
+                    scene = scene,
+                    target = Target.Spatial,
+                    mode = TestMode.Quick,
+                    eqBands = 31,
+                    firTaps = 1024,
+                    policies = p,
+                )
+            }
+
+            Scene.Voice -> {
+                on(Component.Clarity)
+                off(
+                    Component.PlaybackGain,
+                    Component.Lufs,
+                    Component.FetCompressor,
+                    Component.MultibandCompressor,
+                    Component.FieldSurround,
+                    Component.DiffSurround,
+                    Component.StereoImager,
+                    Component.HeadphoneSurround,
+                    Component.Reverb,
+                    Component.DynamicSystem,
+                    Component.PsychoBass,
+                    Component.Bass,
+                    Component.BassMono,
+                    Component.Cure,
+                    Component.Tube,
+                    Component.AnalogX,
+                )
+                current.copy(
+                    scene = scene,
+                    target = Target.Vocal,
+                    mode = TestMode.Quick,
+                    eqBands = 31,
+                    firTaps = 2048,
+                    policies = p,
+                )
+            }
+
+            Scene.Outdoor -> {
+                on(
+                    Component.PlaybackGain,
+                    Component.Lufs,
+                    Component.MultibandCompressor,
+                    Component.PsychoBass,
+                    Component.Clarity,
+                )
+                off(
+                    Component.FetCompressor,
+                    Component.FieldSurround,
+                    Component.DiffSurround,
+                    Component.HeadphoneSurround,
+                    Component.Reverb,
+                    Component.DynamicSystem,
+                    Component.Cure,
+                    Component.Tube,
+                    Component.AnalogX,
+                )
+                current.copy(
+                    scene = scene,
+                    target = Target.Loudness,
+                    mode = TestMode.Quick,
+                    eqBands = 31,
+                    firTaps = 2048,
+                    policies = p,
+                )
+            }
+
+            Scene.Night -> {
+                on(Component.Lufs, Component.FetCompressor, Component.Clarity)
+                off(
+                    Component.PlaybackGain,
+                    Component.MultibandCompressor,
+                    Component.FieldSurround,
+                    Component.DiffSurround,
+                    Component.StereoImager,
+                    Component.HeadphoneSurround,
+                    Component.Reverb,
+                    Component.DynamicSystem,
+                    Component.PsychoBass,
+                    Component.Bass,
+                    Component.BassMono,
+                    Component.Cure,
+                    Component.Tube,
+                    Component.AnalogX,
+                )
+                current.copy(
+                    scene = scene,
+                    target = Target.Vocal,
+                    mode = TestMode.Quick,
+                    eqBands = 31,
+                    firTaps = 2048,
+                    policies = p,
+                )
+            }
+
+            Scene.Custom -> current.copy(scene = Scene.Custom)
+        }
+    }
+}
 
 data class DriverStatus(
     val enabled: Boolean,
