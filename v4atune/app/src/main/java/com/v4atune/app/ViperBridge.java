@@ -161,11 +161,11 @@ final class ViperBridge {
         }
 
         // Record discovery state for debugging/version compatibility.
-        Files.writeString(new File(base, "paths.txt").toPath(),
-                "appBase=" + paths.appBase + "\n" +
+        Files.write(new File(base, "paths.txt").toPath(),
+                ("appBase=" + paths.appBase + "\n" +
                         "db=" + paths.db + "\n" +
                         "prefs=" + paths.prefs + "\n" +
-                        "driver=" + driverReady() + "\n");
+                        "driver=" + driverReady() + "\n").getBytes(StandardCharsets.UTF_8));
 
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(KEY_LAST_BACKUP, base.getAbsolutePath()).apply();
