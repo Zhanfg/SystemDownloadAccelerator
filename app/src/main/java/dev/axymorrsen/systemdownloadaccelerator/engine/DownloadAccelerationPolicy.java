@@ -14,4 +14,13 @@ public final class DownloadAccelerationPolicy {
         }
         return AccelerationDecision.RANGE_ELIGIBLE;
     }
+
+    public AccelerationDecision evaluate(RangeProbe.Result probe) {
+        if (probe == null
+                || !probe.eligible
+                || probe.totalBytes < MIN_RANGE_SIZE_BYTES) {
+            return AccelerationDecision.PASSTHROUGH;
+        }
+        return AccelerationDecision.RANGE_ELIGIBLE;
+    }
 }
