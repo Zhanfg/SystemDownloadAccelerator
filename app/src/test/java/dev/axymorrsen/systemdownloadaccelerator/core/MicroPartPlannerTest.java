@@ -12,11 +12,11 @@ public final class MicroPartPlannerTest {
     private static final long GIB = 1024L * MIB;
 
     @Test
-    public void sixteenMiBWithTwoWorkersCreatesEightBalancedParts() {
+    public void sixteenMiBWithTwoWorkersCreatesFourBalancedParts() {
         long size = 16L * MIB;
         List<RangePart> parts =
                 MicroPartPlanner.plan(0L, size, 2);
-        assertEquals(8, parts.size());
+        assertEquals(4, parts.size());
         assertEquals(0L, parts.get(0).from);
         assertEquals(
                 size - 1L,
@@ -24,13 +24,14 @@ public final class MicroPartPlannerTest {
     }
 
     @Test
-    public void multiGiBPlanCreatesEnoughWorkForSixtyFourWorkers() {
+    public void multiGiBPlanKeepsLongLivedRangesForSixtyFourWorkers() {
         long size = 16L * GIB;
         List<RangePart> parts =
                 MicroPartPlanner.plan(0L, size, 64);
 
-        assertTrue(parts.size() >= 2048);
+        assertEquals(128, parts.size());
         assertTrue(parts.size() <= MicroPartPlanner.ABSOLUTE_MAX_PARTS);
+        assertEquals(128L * MIB, parts.get(0).length());
         assertEquals(0L, parts.get(0).from);
         assertEquals(
                 size - 1L,

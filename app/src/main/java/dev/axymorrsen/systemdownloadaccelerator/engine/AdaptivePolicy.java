@@ -31,12 +31,17 @@ public final class AdaptivePolicy {
         // strongly suggests a high-bandwidth path.
         int initial = contentLength >= 256L * MIB ? 4 : 2;
 
-        if (contentLength >= 4L * GIB
-                && c.downstreamKbps >= 500_000
-                && !c.metered
+        if (!c.metered
                 && !c.powerSave
                 && c.thermalStatus < 3) {
-            initial = 8;
+            if (contentLength >= 1L * GIB
+                    && c.downstreamKbps >= 100_000) {
+                initial = 8;
+            }
+            if (contentLength >= 4L * GIB
+                    && c.downstreamKbps >= 250_000) {
+                initial = 16;
+            }
         }
 
         return Math.min(initial, ceiling);
@@ -70,8 +75,13 @@ public final class AdaptivePolicy {
             case ETHERNET:
                 networkCap = 64;
                 break;
-            case CELLULAR:
             case VPN:
+                // VPN itself is not a reason to hard-cap a fast unmetered
+                // underlay. Runtime throughput/thermal guards decide whether
+                // higher concurrency is useful.
+                networkCap = 64;
+                break;
+            case CELLULAR:
                 networkCap = 32;
                 break;
             case UNKNOWN:
@@ -80,24 +90,13 @@ public final class AdaptivePolicy {
                 break;
         }
 
-        // LinkProperties/NetworkCapabilities bandwidth is only a hint, but it
-        // is useful as an upper bound. Runtime throughput still controls ramp.
-        int linkCap = 64;
-        if (c.downstreamKbps > 0) {
-            if (c.downstreamKbps < 10_000) {
-                linkCap = 2;
-            } else if (c.downstreamKbps < 25_000) {
-                linkCap = 4;
-            } else if (c.downstreamKbps < 50_000) {
-                linkCap = 8;
-            } else if (c.downstreamKbps < 100_000) {
-                linkCap = 16;
-            } else if (c.downstreamKbps < 250_000) {
-                linkCap = 32;
-            }
-        }
-
-        int cap = Math.min(sizeCap, Math.min(networkCap, linkCap));
+        /*
+         * Android's downstreamKbps is an estimate, not a measured application
+         * throughput. Treating it as a hard ceiling can suppress a link that
+         * is actually much faster (especially VPNs and vendor stacks).
+         * Runtime throughput is the authoritative ramp signal.
+         */
+        int cap = Math.min(sizeCap, networkCap);
 
         if (c.metered) {
             cap = Math.min(cap, 8);

@@ -184,3 +184,20 @@ unmetered Wi-Fi/Ethernet. The benchmark now treats this conservatively:
 ## Provider generation preflight
 
 Before correctness or real-network tests, the app now verifies the live DownloadProvider HookedTarget generation. A running stale target is blocked with its loadedVersion/current version instead of being misreported as a Range-engine failure. Dormant providers remain allowed because a fresh process will load the current module generation when the test wakes it.
+
+
+## High-throughput path
+
+Large-file performance tuning avoids artificial per-range connection churn:
+
+- worker replay strips hop-by-hop headers such as Connection: close so the
+  underlying HttpURLConnection/OkHttp pool may reuse TCP/TLS connections;
+- immutable ranges are deliberately much larger for GiB-scale files instead
+  of fixed 8 MiB micro-parts;
+- the sequential reorder reader no longer seeks before every native read;
+- Android downstream bandwidth is treated as a starting hint, not a hard
+  concurrency ceiling; measured throughput remains authoritative;
+- unmetered VPN downloads may ramp to 64 workers when file size and runtime
+  throughput justify it;
+- PIPELINE telemetry compares network ingress with native DownloadManager
+  drain rate and reports queued reorder bytes.

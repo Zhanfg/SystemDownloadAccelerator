@@ -22,12 +22,12 @@ public final class AdaptivePolicyTest {
                 64,
                 policy.maxWorkers(16L * GIB, conditions));
         assertEquals(
-                8,
+                16,
                 policy.initialWorkers(16L * GIB, conditions));
     }
 
     @Test
-    public void largeVpnIsCappedAtThirtyTwoWorkers() {
+    public void largeUnmeteredVpnCanReachSixtyFourWorkers() {
         Conditions conditions = new Conditions(
                 Conditions.NetworkKind.VPN,
                 false,
@@ -35,12 +35,12 @@ public final class AdaptivePolicyTest {
                 0,
                 1_000_000);
         assertEquals(
-                32,
+                64,
                 policy.maxWorkers(32L * GIB, conditions));
     }
 
     @Test
-    public void fiftyMbpsLinkHintCapsAtSixteenWorkers() {
+    public void linkHintIsNotAHardCeiling() {
         Conditions conditions = new Conditions(
                 Conditions.NetworkKind.WIFI,
                 false,
@@ -48,8 +48,11 @@ public final class AdaptivePolicyTest {
                 0,
                 50_000);
         assertEquals(
-                16,
+                64,
                 policy.maxWorkers(32L * GIB, conditions));
+        assertEquals(
+                4,
+                policy.initialWorkers(32L * GIB, conditions));
     }
 
     @Test

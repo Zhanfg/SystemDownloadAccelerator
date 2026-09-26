@@ -93,6 +93,7 @@ final class ParallelRangeInputStream extends InputStream {
     private final AtomicInteger launchedWorkers = new AtomicInteger(0);
     private final AtomicInteger nextToClaim = new AtomicInteger(0);
     private final AtomicLong totalDownloaded = new AtomicLong(0L);
+    private final AtomicLong totalConsumed = new AtomicLong(0L);
     private final Object schedulerLock = new Object();
 
     private final long startedNs = System.nanoTime();
@@ -222,10 +223,13 @@ final class ParallelRangeInputStream extends InputStream {
             long available = state.downloaded.get() - currentPartRead;
             if (available > 0L) {
                 int wanted = (int) Math.min((long) length, available);
-                currentReader.seek(currentPartRead);
+                // Reader position already advances sequentially. Re-seeking on
+                // every native 8 KiB DownloadManager read creates thousands of
+                // extra lseek syscalls per second at high throughput.
                 int count = currentReader.read(buffer, offset, wanted);
                 if (count > 0) {
                     currentPartRead += count;
+                    totalConsumed.addAndGet(count);
                     if (currentPartRead == state.part.length()) {
                         advancePart(state);
                     }
@@ -326,7 +330,9 @@ final class ParallelRangeInputStream extends InputStream {
 
     private void tuneLoop() {
         long previousBytes = totalDownloaded.get();
+        long previousConsumed = totalConsumed.get();
         long previousNs = System.nanoTime();
+        int sampleIndex = 0;
         boolean finalHoldReported = false;
 
         while (!cancelled && !closed) {
@@ -342,11 +348,15 @@ final class ParallelRangeInputStream extends InputStream {
 
             long nowNs = System.nanoTime();
             long bytes = totalDownloaded.get();
+            long consumed = totalConsumed.get();
             long deltaBytes = Math.max(0L, bytes - previousBytes);
+            long deltaConsumed = Math.max(0L, consumed - previousConsumed);
             long deltaNs = Math.max(1L, nowNs - previousNs);
 
             double bytesPerSecond =
                     deltaBytes * 1_000_000_000.0 / deltaNs;
+            double drainBytesPerSecond =
+                    deltaConsumed * 1_000_000_000.0 / deltaNs;
             long remaining =
                     Math.max(0L, sessionLength - bytes);
 
@@ -354,6 +364,23 @@ final class ParallelRangeInputStream extends InputStream {
                     controller.sample(
                             bytesPerSecond,
                             remaining);
+
+            sampleIndex++;
+            if (sampleIndex % 4 == 0) {
+                EngineTelemetry.emit(
+                        metadata.context,
+                        "PIPELINE",
+                        "netMiBs="
+                                + formatMiBPerSecond(bytesPerSecond)
+                                + " drainMiBs="
+                                + formatMiBPerSecond(drainBytesPerSecond)
+                                + " bufferedMiB="
+                                + formatMiB(
+                                        Math.max(0L, bytes - consumed))
+                                + " workers="
+                                + controller.workers()
+                                + "/" + maxWorkers);
+            }
 
             if (decision.action
                     == AdaptiveConcurrencyController.Action.RAMP) {
@@ -405,6 +432,7 @@ final class ParallelRangeInputStream extends InputStream {
             }
 
             previousBytes = bytes;
+            previousConsumed = consumed;
             previousNs = nowNs;
         }
     }

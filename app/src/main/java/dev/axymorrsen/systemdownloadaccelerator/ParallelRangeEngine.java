@@ -409,7 +409,18 @@ final class ParallelRangeEngine {
                 || "if-match".equals(key)
                 || "accept-encoding".equals(key)
                 || "host".equals(key)
-                || "content-length".equals(key);
+                || "content-length".equals(key)
+                // Hop-by-hop headers belong to the original Android request.
+                // Replaying Connection: close on every micro-part destroys
+                // OkHttp/HttpURLConnection connection pooling and forces
+                // repeated TCP/TLS setup.
+                || "connection".equals(key)
+                || "proxy-connection".equals(key)
+                || "keep-alive".equals(key)
+                || "transfer-encoding".equals(key)
+                || "te".equals(key)
+                || "trailer".equals(key)
+                || "upgrade".equals(key);
     }
 
     private static Conditions detectConditions(
