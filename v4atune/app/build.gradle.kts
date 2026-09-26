@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.v4atune.app"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.v4atune.app"
         minSdk = 28
-        targetSdk = 37
+        targetSdk = 36
         versionCode = 2
         versionName = "0.2.0-alpha01"
     }
