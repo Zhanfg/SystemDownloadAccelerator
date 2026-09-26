@@ -26,22 +26,27 @@ public final class AdaptivePolicy {
 
         Conditions c = normalize(conditions);
 
-        // Small/medium transfers do not live long enough to justify a large
-        // connection ramp. Large transfers start at four unless the link hint
-        // strongly suggests a high-bandwidth path.
-        int initial = contentLength >= 256L * MIB ? 4 : 2;
+        // Start conservatively. Android's downstreamKbps is only a hint and
+        // is especially unreliable for VPN/tunnel stacks. Real delivered
+        // throughput decides whether we ramp later.
+        int initial;
+        switch (c.networkKind) {
+            case VPN:
+            case CELLULAR:
+                initial = 2;
+                break;
+            case WIFI:
+            case ETHERNET:
+                initial = contentLength >= 256L * MIB ? 4 : 2;
+                break;
+            case UNKNOWN:
+            default:
+                initial = 2;
+                break;
+        }
 
-        if (!c.metered
-                && !c.powerSave
-                && c.thermalStatus < 3) {
-            if (contentLength >= 1L * GIB
-                    && c.downstreamKbps >= 100_000) {
-                initial = 8;
-            }
-            if (contentLength >= 4L * GIB
-                    && c.downstreamKbps >= 250_000) {
-                initial = 16;
-            }
+        if (c.metered || c.powerSave || c.thermalStatus >= 3) {
+            initial = Math.min(initial, 2);
         }
 
         return Math.min(initial, ceiling);

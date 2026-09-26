@@ -58,7 +58,8 @@ final class ParallelRangeInputStream extends InputStream {
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final int MAX_PART_RETRIES = 3;
     private static final long TUNE_INTERVAL_MS = 2500L;
-    private static final long CACHE_WINDOW_BYTES = 512L * 1024L * 1024L;
+    private static final long CACHE_WINDOW_BYTES = 128L * 1024L * 1024L;
+    private static final long MAX_BUFFERED_BYTES = 128L * 1024L * 1024L;
 
     private static final class PartState {
         final RangePart part;
@@ -90,7 +91,8 @@ final class ParallelRangeInputStream extends InputStream {
 
     private final ExecutorService pool;
     private final AdaptiveConcurrencyController controller;
-    private final AtomicInteger launchedWorkers = new AtomicInteger(0);
+    private final AtomicInteger activeWorkers = new AtomicInteger(0);
+    private final AtomicInteger peakWorkers = new AtomicInteger(0);
     private final AtomicInteger nextToClaim = new AtomicInteger(0);
     private final AtomicLong totalDownloaded = new AtomicLong(0L);
     private final AtomicLong totalConsumed = new AtomicLong(0L);
@@ -230,6 +232,12 @@ final class ParallelRangeInputStream extends InputStream {
                 if (count > 0) {
                     currentPartRead += count;
                     totalConsumed.addAndGet(count);
+                    if (totalDownloaded.get() - totalConsumed.get()
+                            < MAX_BUFFERED_BYTES) {
+                        synchronized (schedulerLock) {
+                            schedulerLock.notifyAll();
+                        }
+                    }
                     if (currentPartRead == state.part.length()) {
                         advancePart(state);
                     }
@@ -309,20 +317,24 @@ final class ParallelRangeInputStream extends InputStream {
                 Math.min(maxWorkers, target));
 
         while (!cancelled) {
-            int current = launchedWorkers.get();
+            int current = activeWorkers.get();
             if (current >= capped) {
                 return;
             }
-            if (!launchedWorkers.compareAndSet(
+            if (!activeWorkers.compareAndSet(
                     current,
                     current + 1)) {
                 continue;
             }
 
+            peakWorkers.accumulateAndGet(
+                    current + 1,
+                    Math::max);
+
             try {
                 pool.execute(this::workerLoop);
             } catch (RejectedExecutionException rejected) {
-                launchedWorkers.decrementAndGet();
+                activeWorkers.decrementAndGet();
                 return;
             }
         }
@@ -360,9 +372,14 @@ final class ParallelRangeInputStream extends InputStream {
             long remaining =
                     Math.max(0L, sessionLength - bytes);
 
+            double deliveredBps =
+                    drainBytesPerSecond > 0.0
+                            ? Math.min(bytesPerSecond, drainBytesPerSecond)
+                            : bytesPerSecond;
+
             AdaptiveConcurrencyController.Decision decision =
                     controller.sample(
-                            bytesPerSecond,
+                            deliveredBps,
                             remaining);
 
             sampleIndex++;
@@ -391,11 +408,29 @@ final class ParallelRangeInputStream extends InputStream {
                         "ADAPT_RAMP",
                         "workers=" + decision.workers
                                 + "/" + maxWorkers
-                                + " speedMiBs="
-                                + formatMiBPerSecond(
-                                        bytesPerSecond)
+                                + " deliveredMiBs="
+                                + formatMiBPerSecond(deliveredBps)
+                                + " netMiBs="
+                                + formatMiBPerSecond(bytesPerSecond)
                                 + " remainingMiB="
                                 + formatMiB(remaining));
+            } else if (decision.action
+                    == AdaptiveConcurrencyController.Action.ROLLBACK) {
+                finalHoldReported = true;
+                synchronized (schedulerLock) {
+                    schedulerLock.notifyAll();
+                }
+                EngineTelemetry.emit(
+                        metadata.context,
+                        "ADAPT_ROLLBACK",
+                        "workers=" + decision.workers
+                                + "/" + maxWorkers
+                                + " deliveredMiBs="
+                                + formatMiBPerSecond(deliveredBps)
+                                + " gain="
+                                + formatRatio(decision.gainRatio)
+                                + " reason="
+                                + decision.reason);
             } else if (decision.action
                     == AdaptiveConcurrencyController.Action.HOLD) {
                 if (!finalHoldReported
@@ -440,14 +475,25 @@ final class ParallelRangeInputStream extends InputStream {
     private void workerLoop() {
         try {
             while (!cancelled) {
+                if (activeWorkers.get() > controller.workers()) {
+                    return;
+                }
+
                 PartState state = claimPart();
                 if (state == null) {
                     return;
                 }
+
                 downloadPart(state);
+
+                if (activeWorkers.get() > controller.workers()) {
+                    return;
+                }
             }
         } catch (Throwable t) {
             failSession(t);
+        } finally {
+            activeWorkers.decrementAndGet();
         }
     }
 
@@ -570,6 +616,8 @@ final class ParallelRangeInputStream extends InputStream {
         try (FileOutputStream out =
                      new FileOutputStream(state.file, true)) {
             while (!cancelled && remaining > 0L) {
+                waitForBufferBudget();
+
                 int wanted = (int) Math.min(
                         (long) buffer.length,
                         remaining);
@@ -585,6 +633,23 @@ final class ParallelRangeInputStream extends InputStream {
 
                 synchronized (state.lock) {
                     state.lock.notifyAll();
+                }
+            }
+        }
+    }
+
+    private void waitForBufferBudget() throws IOException {
+        while (!cancelled
+                && totalDownloaded.get() - totalConsumed.get()
+                >= MAX_BUFFERED_BYTES) {
+            throwIfInterruptedOrFailed();
+            synchronized (schedulerLock) {
+                try {
+                    schedulerLock.wait(50L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new InterruptedIOException(
+                            "range prefetch backpressure interrupted");
                 }
             }
         }
@@ -636,7 +701,7 @@ final class ParallelRangeInputStream extends InputStream {
                 "COMPLETE",
                 "bytes=" + sessionLength
                         + " peakWorkers="
-                        + launchedWorkers.get()
+                        + peakWorkers.get()
                         + "/" + maxWorkers
                         + " avgMiBs="
                         + formatMiBPerSecond(averageBps));

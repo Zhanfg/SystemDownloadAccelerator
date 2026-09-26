@@ -11,7 +11,7 @@ public final class AdaptivePolicyTest {
     private final AdaptivePolicy policy = new AdaptivePolicy();
 
     @Test
-    public void sixteenGiBFastWifiCanReachSixtyFourWorkers() {
+    public void sixteenGiBFastWifiCanReachSixtyFourWorkersButStartsAtFour() {
         Conditions conditions = new Conditions(
                 Conditions.NetworkKind.WIFI,
                 false,
@@ -22,12 +22,12 @@ public final class AdaptivePolicyTest {
                 64,
                 policy.maxWorkers(16L * GIB, conditions));
         assertEquals(
-                16,
+                4,
                 policy.initialWorkers(16L * GIB, conditions));
     }
 
     @Test
-    public void largeUnmeteredVpnCanReachSixtyFourWorkers() {
+    public void largeUnmeteredVpnCanReachSixtyFourButAlwaysStartsAtTwo() {
         Conditions conditions = new Conditions(
                 Conditions.NetworkKind.VPN,
                 false,
@@ -37,21 +37,21 @@ public final class AdaptivePolicyTest {
         assertEquals(
                 64,
                 policy.maxWorkers(32L * GIB, conditions));
+        assertEquals(
+                2,
+                policy.initialWorkers(32L * GIB, conditions));
     }
 
     @Test
-    public void linkHintIsNotAHardCeiling() {
+    public void linkHintDoesNotIncreaseInitialVpnConcurrency() {
         Conditions conditions = new Conditions(
-                Conditions.NetworkKind.WIFI,
+                Conditions.NetworkKind.VPN,
                 false,
                 false,
                 0,
-                50_000);
+                5_000_000);
         assertEquals(
-                64,
-                policy.maxWorkers(32L * GIB, conditions));
-        assertEquals(
-                4,
+                2,
                 policy.initialWorkers(32L * GIB, conditions));
     }
 
@@ -66,6 +66,9 @@ public final class AdaptivePolicyTest {
         assertEquals(
                 8,
                 policy.maxWorkers(32L * GIB, conditions));
+        assertEquals(
+                2,
+                policy.initialWorkers(32L * GIB, conditions));
     }
 
     @Test

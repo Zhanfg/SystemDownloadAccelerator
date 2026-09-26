@@ -26,13 +26,12 @@ public final class AdaptiveConcurrencyControllerTest {
     }
 
     @Test
-    public void stopsRampingWhenMarginalGainIsPoor() {
+    public void rollsBackWhenRampDoesNotImproveDeliveredThroughput() {
         AdaptiveConcurrencyController controller =
                 new AdaptiveConcurrencyController(2, 16);
 
         controller.sample(8.0 * 1024 * 1024, 8L * GIB);
         controller.sample(8.0 * 1024 * 1024, 8L * GIB);
-
         assertEquals(4, controller.workers());
 
         controller.sample(8.1 * 1024 * 1024, 8L * GIB);
@@ -40,9 +39,9 @@ public final class AdaptiveConcurrencyControllerTest {
                 controller.sample(8.2 * 1024 * 1024, 8L * GIB);
 
         assertEquals(
-                AdaptiveConcurrencyController.Action.HOLD,
+                AdaptiveConcurrencyController.Action.ROLLBACK,
                 evaluation.action);
-        assertEquals(4, controller.workers());
+        assertEquals(2, controller.workers());
 
         assertEquals(
                 AdaptiveConcurrencyController.Action.HOLD,
