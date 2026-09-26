@@ -53,28 +53,35 @@ class TuneViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setScene(scene: Scene) {
+        _state.update { state ->
+            state.copy(options = ScenePresets.apply(scene, state.options))
+        }
+    }
+
     fun setTarget(target: Target) {
-        _state.update { it.copy(options = it.options.copy(target = target)) }
+        _state.update { it.copy(options = it.options.copy(scene = Scene.Custom, target = target)) }
     }
 
     fun setMode(mode: TestMode) {
-        _state.update { it.copy(options = it.options.copy(mode = mode)) }
+        _state.update { it.copy(options = it.options.copy(scene = Scene.Custom, mode = mode)) }
     }
 
     fun setEqBands(count: Int) {
         if (count !in listOf(10, 15, 25, 31)) return
-        _state.update { it.copy(options = it.options.copy(eqBands = count)) }
+        _state.update { it.copy(options = it.options.copy(scene = Scene.Custom, eqBands = count)) }
     }
 
     fun setFirTaps(taps: Int) {
         if (taps !in listOf(1024, 2048, 4096, 8192)) return
-        _state.update { it.copy(options = it.options.copy(firTaps = taps)) }
+        _state.update { it.copy(options = it.options.copy(scene = Scene.Custom, firTaps = taps)) }
     }
 
     fun setPolicy(component: Component, policy: Policy) {
         _state.update {
             it.copy(
                 options = it.options.copy(
+                    scene = Scene.Custom,
                     policies = it.options.policies.toMutableMap().apply {
                         this[component] = policy
                     },
