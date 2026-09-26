@@ -58,6 +58,8 @@ public final class MainActivity extends Activity {
     private Button selfTestButton;
     private TextView selfTestStatus;
     private TextView engineDiag;
+    private Button diagnosticButton;
+    private TextView diagnosticStatus;
     private Button refreshButton;
     private boolean engineReceiverRegistered;
     private final ArrayDeque<String> engineEvents = new ArrayDeque<>();
@@ -250,6 +252,36 @@ public final class MainActivity extends Activity {
 
         root.addView(testBox, matchWrap());
 
+        TextView diagSection = text("诊断日志", 16, TEXT, true);
+        LinearLayout.LayoutParams diagSectionLp = wrap();
+        diagSectionLp.topMargin = dp(18);
+        diagSectionLp.bottomMargin = dp(10);
+        root.addView(diagSection, diagSectionLp);
+
+        LinearLayout diagBox = cardContainer();
+        TextView diagExplain = text(
+                "一键收集模块/LSPosed 状态、runningTargets、自检事件、相关 logcat，"
+                        + "并在 root 可用时附加 LSPosed 模块日志与进程快照。日志保存到公共 Download 目录。",
+                13, MUTED, false);
+        diagExplain.setLineSpacing(0f, 1.15f);
+        diagBox.addView(diagExplain);
+
+        diagnosticStatus = text("尚未生成", 12, MUTED, false);
+        LinearLayout.LayoutParams diagStatusLp = wrap();
+        diagStatusLp.topMargin = dp(10);
+        diagBox.addView(diagnosticStatus, diagStatusLp);
+
+        diagnosticButton = new Button(this);
+        diagnosticButton.setText("生成诊断日志");
+        diagnosticButton.setTextSize(15);
+        diagnosticButton.setAllCaps(false);
+        diagnosticButton.setOnClickListener(v -> generateDiagnosticLog());
+        LinearLayout.LayoutParams diagButtonLp = matchWrap();
+        diagButtonLp.topMargin = dp(12);
+        diagBox.addView(diagnosticButton, diagButtonLp);
+
+        root.addView(diagBox, matchWrap());
+
         refreshButton = new Button(this);
         refreshButton.setText("刷新状态");
         refreshButton.setTextSize(15);
@@ -295,6 +327,53 @@ public final class MainActivity extends Activity {
                         mainHandler.postDelayed(this::refresh, 250L);
                     }
                 }));
+    }
+
+    private void generateDiagnosticLog() {
+        if (diagnosticButton == null || diagnosticStatus == null) {
+            return;
+        }
+
+        diagnosticButton.setEnabled(false);
+        diagnosticButton.setText("正在生成…");
+        diagnosticStatus.setText("正在收集 LSPosed、进程与日志；root 授权弹窗出现时请允许");
+        diagnosticStatus.setTextColor(AMBER);
+
+        java.util.ArrayList<String> events =
+                new java.util.ArrayList<>(engineEvents);
+        String selfTest = selfTestStatus == null
+                ? "(self-test UI unavailable)"
+                : String.valueOf(selfTestStatus.getText());
+        XposedService service = ModuleApp.service();
+
+        new Thread(() -> {
+            DiagnosticReport.Result result =
+                    DiagnosticReport.generate(
+                            getApplicationContext(),
+                            service,
+                            events,
+                            selfTest);
+
+            runOnUiThread(() -> {
+                diagnosticButton.setEnabled(true);
+                diagnosticButton.setText("重新生成诊断日志");
+
+                if (result.success) {
+                    diagnosticStatus.setText(
+                            "已生成："
+                                    + result.displayPath
+                                    + "\n把这个 TXT 直接发给我即可。");
+                    diagnosticStatus.setTextColor(GREEN);
+                } else {
+                    diagnosticStatus.setText(
+                            "生成失败："
+                                    + (result.error == null
+                                            ? "unknown"
+                                            : result.error));
+                    diagnosticStatus.setTextColor(RED);
+                }
+            });
+        }, "sysdl-diagnostic-report").start();
     }
 
     private void refresh() {

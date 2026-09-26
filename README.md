@@ -105,3 +105,13 @@ gradle :app:testDebugUnitTest :app:assembleDebug
 ```
 
 GitHub Actions artifact: `SystemDownloadAccelerator-debug`.
+
+## One-tap diagnostics
+
+The app includes a `生成诊断日志` button. It writes a shareable text report to:
+
+`Download/SystemDownloadAccelerator/`
+
+The report includes module/framework versions, scope and running targets, self-test
+events, filtered Android logcat and (when root access is available) LSPosed module
+logs and relevant process snapshots.
