@@ -322,6 +322,9 @@ class SweepCalibrator(private val context: Context) {
     }
 
     private fun playRecord(sampleRate: Int, stereoPcm: ShortArray, preroll: Double = preRecordSeconds): ShortArray {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            throw SecurityException("Microphone permission was revoked before AudioRecord initialization")
+        }
         val source = preferredSource()
         val inFormat = AudioFormat.Builder()
             .setSampleRate(sampleRate)
