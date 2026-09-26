@@ -168,7 +168,7 @@ final class SegmentedTransfer {
                     conn.getHeaderField("Last-Modified"),
                     conn.getHeaderField("Content-Encoding"));
 
-            if (status == HttpURLConnection.HTTP_PARTIAL) {
+            if (status == 206) {
                 try (InputStream in = conn.getInputStream()) {
                     // Consume the one-byte probe body so HttpEngine/URLConnection
                     // can close cleanly without leaving a half-read response.
@@ -223,17 +223,14 @@ final class SegmentedTransfer {
         AtomicLong written = new AtomicLong(0L);
         List<Future<Long>> futures = new ArrayList<>(segments.size());
 
-        try (ParcelFileDescriptor progressPfd = rt.context.getContentResolver()
-                .openFileDescriptor(rt.downloadUri, "rw")) {
-            if (progressPfd == null) {
-                return false;
-            }
-            FileDescriptor progressFd = progressPfd.getFileDescriptor();
-
+        try {
             for (Segment segment : segments) {
                 futures.add(pool.submit(() ->
                         transferOne(rt, segment, cancelled, written)));
             }
+
+            long lastLogBytes = 0L;
+            long lastLogTime = android.os.SystemClock.elapsedRealtime();
 
             boolean done;
             do {
@@ -245,13 +242,6 @@ final class SegmentedTransfer {
                     }
                 }
 
-                long bytes = written.get();
-                if (bytes > 0L) {
-                    setLong(rt.delta, "mCurrentBytes", Math.min(bytes, rt.totalBytes));
-                    setBoolean(rt.thread, "mMadeProgress", true);
-                    invokeUpdateProgress(rt, progressFd);
-                }
-
                 if (!done) {
                     if (getBoolean(rt.thread, "mShutdownRequested")) {
                         cancelled.set(true);
@@ -260,7 +250,29 @@ final class SegmentedTransfer {
                     if (getBoolean(rt.thread, "mPolicyDirty")) {
                         invokeNoArgs(rt.thread, "checkConnectivity");
                     }
-                    Thread.sleep(150L);
+
+                    long now = android.os.SystemClock.elapsedRealtime();
+                    if (now - lastLogTime >= 500L) {
+                        long bytes = written.get();
+                        long delta = bytes - lastLogBytes;
+                        long speed = delta <= 0L
+                                ? 0L
+                                : (delta * 1000L) / Math.max(1L, now - lastLogTime);
+                        Log.d(TAG, "segmented progress bytes=" + bytes
+                                + "/" + rt.totalBytes
+                                + " speed=" + speed + " B/s");
+                        lastLogBytes = bytes;
+                        lastLogTime = now;
+                    }
+
+                    /*
+                     * Deliberately do NOT publish mCurrentBytes to DownloadProvider
+                     * while segments are in flight. Segment completion is out of
+                     * order, so an aggregate byte count is not a valid contiguous
+                     * resume offset. If the process dies here, the DB remains at
+                     * currentBytes=0 and Android safely restarts from the beginning.
+                     */
+                    Thread.sleep(120L);
                 }
             } while (!done);
 
@@ -269,15 +281,7 @@ final class SegmentedTransfer {
                 sum += future.get();
             }
 
-            if (sum != rt.totalBytes || written.get() != rt.totalBytes) {
-                return false;
-            }
-
-            setLong(rt.delta, "mCurrentBytes", rt.totalBytes);
-            setBoolean(rt.thread, "mMadeProgress", true);
-            invokeUpdateProgress(rt, progressFd);
-            progressFd.sync();
-            return true;
+            return sum == rt.totalBytes && written.get() == rt.totalBytes;
         } catch (Throwable t) {
             cancelled.set(true);
             Log.w(TAG, "segment worker/coordinator failure", unwrap(t));
@@ -317,7 +321,7 @@ final class SegmentedTransfer {
             conn.setRequestProperty("Accept-Encoding", "identity");
 
             int status = conn.getResponseCode();
-            if (status != HttpURLConnection.HTTP_PARTIAL) {
+            if (status != 206) {
                 throw new IllegalStateException("segment HTTP " + status);
             }
 
@@ -363,9 +367,12 @@ final class SegmentedTransfer {
 
             out.flush();
             return local;
-        } catch (Throwable t) {
+        } catch (Exception e) {
             cancelled.set(true);
-            throw t;
+            throw e;
+        } catch (Error e) {
+            cancelled.set(true);
+            throw e;
         } finally {
             closeQuietly(in);
             closeQuietly(out);
@@ -504,15 +511,6 @@ final class SegmentedTransfer {
             workers--;
         }
         return 0;
-    }
-
-    private static void invokeUpdateProgress(Runtime rt, FileDescriptor fd)
-            throws Throwable {
-        try {
-            rt.updateProgress.invoke(rt.thread, fd);
-        } catch (InvocationTargetException e) {
-            throw e.getCause();
-        }
     }
 
     private static Object invokeNoArgs(Object target, String name) throws Exception {
@@ -657,7 +655,6 @@ final class SegmentedTransfer {
         final String mimeType;
         final int requestingUid;
         final Method addRequestHeaders;
-        final Method updateProgress;
         final SSLSocketFactory sslSocketFactory;
         final String rejectReason;
 
@@ -676,7 +673,6 @@ final class SegmentedTransfer {
                 String mimeType,
                 int requestingUid,
                 Method addRequestHeaders,
-                Method updateProgress,
                 SSLSocketFactory sslSocketFactory,
                 String rejectReason) {
             this.thread = thread;
@@ -693,7 +689,6 @@ final class SegmentedTransfer {
             this.mimeType = mimeType;
             this.requestingUid = requestingUid;
             this.addRequestHeaders = addRequestHeaders;
-            this.updateProgress = updateProgress;
             this.sslSocketFactory = sslSocketFactory;
             this.rejectReason = rejectReason;
         }
@@ -728,9 +723,6 @@ final class SegmentedTransfer {
                     "addRequestHeaders",
                     HttpURLConnection.class,
                     boolean.class);
-            Method updateProgress = findMethod(
-                    thread.getClass(), "updateProgress", FileDescriptor.class);
-
             SSLSocketFactory ssl = null;
             if (original instanceof HttpsURLConnection) {
                 try {
@@ -772,7 +764,6 @@ final class SegmentedTransfer {
                     mime,
                     uid,
                     addHeaders,
-                    updateProgress,
                     ssl,
                     reject);
         }
