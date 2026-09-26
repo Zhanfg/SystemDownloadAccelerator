@@ -212,3 +212,18 @@ Runtime identity is stricter than Android versionCode alone.
 - DownloadProvider emits version/build/generation receipts during adapter install and hot reload;
 - self-test and benchmark preflight reject a running provider whose versionCode matches but BUILD_ID does not;
 - this prevents two different APK builds that accidentally reuse the same versionCode from sharing or confusing hot-reload hooks.
+
+
+## Provider self-heal
+
+Before correctness or benchmark runs, the app verifies both the live
+DownloadProvider versionCode and the runtime BUILD_ID receipt.
+
+If a running provider is stale, API 102 XposedService.hotReloadModule(...)
+is requested explicitly for that exact running target. The action waits for
+the callback and then requires a matching ADAPTER_INSTALL receipt before the
+test is allowed to proceed. PROCESS_DIED is also safe because the pending
+DownloadManager action will start a fresh provider process.
+
+This avoids relying on loadedVersionCode alone when a framework reports a
+target as up to date but the injected runtime still belongs to an older build.

@@ -30,8 +30,13 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.github.libxposed.service.HookedTarget;
+import io.github.libxposed.service.HotReloadResult;
 import io.github.libxposed.service.XposedService;
 
 /**
@@ -71,6 +76,8 @@ public final class MainActivity extends Activity {
     private TextView diagnosticStatus;
     private Button refreshButton;
     private boolean engineReceiverRegistered;
+    private final AtomicBoolean providerReloadInFlight =
+            new AtomicBoolean(false);
     private final ArrayDeque<String> engineEvents = new ArrayDeque<>();
 
     private final BroadcastReceiver engineReceiver = new BroadcastReceiver() {
@@ -582,58 +589,16 @@ public final class MainActivity extends Activity {
                 failure = "无法确认 DownloadProvider 状态：" + report.error;
             } else if (!report.provider.inScope) {
                 failure = "DownloadProvider 不在 LSPosed Scope 中";
-            } else if (report.provider.running
-                    && !report.provider.currentGeneration) {
-                failure =
-                        "DownloadProvider 仍运行旧 Hook generation：加载版本 "
-                                + report.provider.loadedVersion
-                                + "，当前版本 "
-                                + BuildConfig.VERSION_CODE
-                                + "。请先让 Provider 完成热重载/进程重启，"
-                                + "再运行"
-                                + action
-                                + "。";
-                EngineTelemetry.emit(
-                        getApplicationContext(),
-                        "PROVIDER_STALE",
-                        "action=" + action
-                                + " loaded="
-                                + report.provider.loadedVersion
-                                + " current="
-                                + BuildConfig.VERSION_CODE
-                                + " state="
-                                + report.provider.targetState);
             } else if (report.provider.running) {
                 String receipt = latestProviderBuildReceipt();
-                if (!receiptMatchesCurrentBuild(receipt)) {
-                    try {
-                        Thread.sleep(250L);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                    receipt = latestProviderBuildReceipt();
-                }
+                boolean versionReady = report.provider.currentGeneration;
+                boolean buildReady = receiptMatchesCurrentBuild(receipt);
 
-                if (!receiptMatchesCurrentBuild(receipt)) {
-                    failure =
-                            "DownloadProvider 的 versionCode 已是 "
-                                    + BuildConfig.VERSION_CODE
-                                    + "，但运行中的 Hook build 与当前 APK 不一致。"
-                                    + "当前 build="
-                                    + BuildConfig.BUILD_ID
-                                    + "，Provider 回执="
-                                    + (receipt == null ? "(none)" : receipt)
-                                    + "。请先完成热重载/Provider 进程重启再运行"
-                                    + action
-                                    + "。";
-                    EngineTelemetry.emit(
-                            getApplicationContext(),
-                            "PROVIDER_BUILD_STALE",
-                            "action=" + action
-                                    + " currentBuild="
-                                    + BuildConfig.BUILD_ID
-                                    + " receipt="
-                                    + String.valueOf(receipt));
+                if (!versionReady || !buildReady) {
+                    failure = recoverProviderGeneration(
+                            action,
+                            report.provider,
+                            receipt);
                 }
             }
 
@@ -646,6 +611,183 @@ public final class MainActivity extends Activity {
                 }
             });
         }, "sysdl-provider-preflight").start();
+    }
+
+    private String recoverProviderGeneration(
+            String action,
+            ScopeStatus provider,
+            String previousReceipt) {
+        XposedService service = ModuleApp.service();
+        if (service == null) {
+            return "LSPosed 服务已断开，无法自动刷新 DownloadProvider";
+        }
+
+        try {
+            if (service.getApiVersion() < XposedService.API_102) {
+                return "当前框架不支持 API 102 显式热重载；"
+                        + "请重启 DownloadProvider 后再运行"
+                        + action;
+            }
+        } catch (Throwable t) {
+            return "读取 Hot Reload 能力失败："
+                    + t.getClass().getSimpleName()
+                    + ": "
+                    + String.valueOf(t.getMessage());
+        }
+
+        if (!providerReloadInFlight.compareAndSet(false, true)) {
+            return "DownloadProvider 正在自动热重载，请稍候再运行" + action;
+        }
+
+        try {
+            HookedTarget target = null;
+            try {
+                target = findTarget(
+                        service.getRunningTargets(),
+                        "com.android.providers.downloads",
+                        provider.uid);
+            } catch (Throwable t) {
+                return "无法重新取得 DownloadProvider target："
+                        + t.getClass().getSimpleName()
+                        + ": "
+                        + String.valueOf(t.getMessage());
+            }
+
+            if (target == null) {
+                // Provider became dormant between preflight and recovery.
+                // The next DownloadManager request will start a fresh process.
+                EngineTelemetry.emit(
+                        getApplicationContext(),
+                        "PROVIDER_RELOAD_SKIP",
+                        "target became dormant; fresh launch will load current build");
+                return null;
+            }
+
+            EngineTelemetry.emit(
+                    getApplicationContext(),
+                    "PROVIDER_RELOAD_REQUEST",
+                    "action=" + action
+                            + " pid=" + target.getPid()
+                            + " state=" + target.getState()
+                            + " loadedVersion=" + target.getLoadedVersionCode()
+                            + " currentVersion=" + BuildConfig.VERSION_CODE
+                            + " currentBuild=" + BuildConfig.BUILD_ID
+                            + " previousReceipt="
+                            + String.valueOf(previousReceipt));
+
+            CountDownLatch callbackLatch = new CountDownLatch(1);
+            AtomicReference<HotReloadResult.Status> callbackStatus =
+                    new AtomicReference<>();
+            AtomicReference<String> callbackMessage =
+                    new AtomicReference<>();
+
+            try {
+                service.hotReloadModule(
+                        target,
+                        null,
+                        (hookedTarget, result) -> {
+                            if (result != null) {
+                                callbackStatus.set(result.status());
+                                callbackMessage.set(result.message());
+                            }
+                            callbackLatch.countDown();
+                        });
+            } catch (UnsupportedOperationException e) {
+                return "框架不支持显式 Hot Reload："
+                        + String.valueOf(e.getMessage());
+            } catch (SecurityException e) {
+                return "Hot Reload target 已失效："
+                        + String.valueOf(e.getMessage());
+            } catch (Throwable t) {
+                return "提交 DownloadProvider Hot Reload 失败："
+                        + t.getClass().getSimpleName()
+                        + ": "
+                        + String.valueOf(t.getMessage());
+            }
+
+            boolean callbackArrived;
+            try {
+                callbackArrived = callbackLatch.await(
+                        10L,
+                        TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return "等待 DownloadProvider Hot Reload 时被中断";
+            }
+
+            if (!callbackArrived) {
+                EngineTelemetry.emit(
+                        getApplicationContext(),
+                        "PROVIDER_RELOAD_TIMEOUT",
+                        "callback not received within 10s");
+                return "DownloadProvider Hot Reload 回调超时；"
+                        + "为避免混用旧 Hook，已阻止"
+                        + action;
+            }
+
+            HotReloadResult.Status status = callbackStatus.get();
+            String message = callbackMessage.get();
+
+            EngineTelemetry.emit(
+                    getApplicationContext(),
+                    "PROVIDER_RELOAD_RESULT",
+                    "status=" + String.valueOf(status)
+                            + " message=" + String.valueOf(message));
+
+            if (status == HotReloadResult.Status.PROCESS_DIED) {
+                // A dead provider is safe: the pending action will wake a fresh
+                // process which loads the installed generation from scratch.
+                return null;
+            }
+
+            if (status != HotReloadResult.Status.SUCCEEDED
+                    && status != HotReloadResult.Status.IN_PROGRESS) {
+                return "DownloadProvider Hot Reload 未成功："
+                        + String.valueOf(status)
+                        + (message == null || message.isBlank()
+                                ? ""
+                                : " · " + message);
+            }
+
+            long deadline =
+                    android.os.SystemClock.elapsedRealtime() + 6000L;
+            while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                String receipt = latestProviderBuildReceipt();
+                if (receiptMatchesCurrentBuild(receipt)) {
+                    StatusReport refreshed = queryStatus();
+                    if (!refreshed.provider.running
+                            || refreshed.provider.currentGeneration) {
+                        EngineTelemetry.emit(
+                                getApplicationContext(),
+                                "PROVIDER_RELOAD_VERIFIED",
+                                "version=" + BuildConfig.VERSION_CODE
+                                        + " build=" + BuildConfig.BUILD_ID
+                                        + " receipt=" + receipt);
+                        return null;
+                    }
+                }
+
+                try {
+                    Thread.sleep(120L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return "等待当前 Provider build 回执时被中断";
+                }
+            }
+
+            String receipt = latestProviderBuildReceipt();
+            return "框架报告 Hot Reload="
+                    + status
+                    + "，但 6 秒内没有收到当前 Provider build 回执。"
+                    + "当前 build=" + BuildConfig.BUILD_ID
+                    + "，最新回执="
+                    + (receipt == null ? "(none)" : receipt)
+                    + "。已阻止"
+                    + action
+                    + "，避免误测旧 Hook。";
+        } finally {
+            providerReloadInFlight.set(false);
+        }
     }
 
     private String latestProviderBuildReceipt() {
@@ -872,9 +1014,14 @@ public final class MainActivity extends Activity {
             overall.setTextColor(RED);
             version.setText("错误：" + report.error);
         } else {
-            version.setText("模块版本：" + BuildConfig.VERSION_NAME
-                    + " (" + BuildConfig.VERSION_CODE + ") · 热重载 "
-                    + (report.apiVersion >= XposedService.API_102 ? "可用" : "不可用"));
+            version.setText(
+                    "模块版本：" + BuildConfig.VERSION_NAME
+                            + " (" + BuildConfig.VERSION_CODE + ")"
+                            + " · build " + BuildConfig.BUILD_ID
+                            + " · 热重载 "
+                            + (report.apiVersion >= XposedService.API_102
+                                    ? "可用"
+                                    : "不可用"));
 
             boolean providerReady = report.provider.currentGeneration;
             boolean providerDormant = report.provider.inScope && !report.provider.running;
