@@ -61,13 +61,13 @@ public final class AdaptiveConcurrencyControllerTest {
 
         assertEquals(
                 AdaptiveConcurrencyController.Action.WARMUP,
-                controller.sample(200.0 * 1024, 8L * GIB).action);
+                controller.sample(300.0 * 1024, 8L * GIB).action);
         assertEquals(
                 AdaptiveConcurrencyController.Action.WARMUP,
-                controller.sample(220.0 * 1024, 8L * GIB).action);
+                controller.sample(350.0 * 1024, 8L * GIB).action);
         assertEquals(
                 AdaptiveConcurrencyController.Action.HOLD,
-                controller.sample(240.0 * 1024, 8L * GIB).action);
+                controller.sample(400.0 * 1024, 8L * GIB).action);
 
         controller.sample(16.0 * 1024 * 1024, 8L * GIB);
         controller.sample(17.0 * 1024 * 1024, 8L * GIB);
