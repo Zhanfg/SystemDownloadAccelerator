@@ -235,7 +235,7 @@ class SweepCalibrator(private val context: Context) {
 
         progress("动态压缩探针")
         val medium = toneProbe(sampleRate, 1000.0, -25.0)
-        val loud = distortion.first { it.frequency == 1000.0 }
+        val loud = toneProbe(sampleRate, 1000.0, -13.0)
         val expectedDelta = 12.0
         val actualDelta = loud.levelDb - medium.levelDb
         val compressionDb = max(0.0, expectedDelta - actualDelta)
