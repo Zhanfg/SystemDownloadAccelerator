@@ -1,18 +1,21 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
 import android.content.Context;
+import android.net.Network;
 import android.os.Build;
-import android.os.SystemClock;
 import android.util.Log;
 import android.util.Pair;
 
+import java.io.InputStream;
 import java.lang.reflect.Executable;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
-import java.util.Arrays;
-import java.util.HashSet;
+import java.net.URL;
+import java.net.URLConnection;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedInterface;
@@ -20,23 +23,18 @@ import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam;
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam;
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam;
-import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
 
 /**
- * libxposed API 102 entry point.
+ * API-102 system adapter.
  *
- * Runtime status is authoritative from XposedService.getRunningTargets().
- * Injected processes must not attempt to write RemotePreferences: the module-side
- * RemotePreferences view is read-only in hooked processes.
+ * DownloadProvider private transfer methods are intentionally not used as an
+ * acceleration entry point. The adapter observes connection creation and
+ * replaces only the response InputStream with the independent range core.
  */
 public final class AcceleratorModule extends XposedModule {
     private static final String TAG = "SysDlAccel";
-    private static final String HOOK_PREFIX = "sysdl:";
-
-    private static final Set<String> PROVIDER_METHODS = new HashSet<>(Arrays.asList(
-            "run", "executeDownload", "transferData", "addRequestHeaders"
-    ));
+    private static final String ID_PREFIX = "sysdl2:";
 
     private static final String[] DOWNLOADS_UI_CLASSES = {
             "com.android.providers.downloads.ui.DownloadList",
@@ -53,13 +51,16 @@ public final class AcceleratorModule extends XposedModule {
     private final AtomicBoolean providerInstalled = new AtomicBoolean(false);
     private final AtomicBoolean downloadsUiSeen = new AtomicBoolean(false);
     private final AtomicBoolean systemUiSeen = new AtomicBoolean(false);
-    private final Set<String> hookedIds = new HashSet<>();
+
+    private final Set<String> hookedIds =
+            ConcurrentHashMap.newKeySet();
+    private final Set<String> connectionClassHooks =
+            ConcurrentHashMap.newKeySet();
+    private final Set<String> dynamicFactoryHooks =
+            ConcurrentHashMap.newKeySet();
 
     private int providerHookCount;
     private int providerDeoptimizedCount;
-    private int providerDeoptFailedCount;
-    private int providerConnectionCandidateCount;
-    private String providerHookInventory = "";
     private int downloadsUiClassCount;
     private int systemUiClassCount;
     private String processName = "";
@@ -69,50 +70,35 @@ public final class AcceleratorModule extends XposedModule {
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
         processName = param.getProcessName();
-        emit(Log.INFO, "module loaded process=" + processName
-                + " sdk=" + Build.VERSION.SDK_INT
-                + " api=" + getApiVersion()
-                + " version=" + BuildConfig.VERSION_CODE);
-    }
-
-    @Override
-    public void onPackageLoaded(PackageLoadedParam param) {
-        Scope scope = Scope.fromPackage(param.getPackageName());
-        if (scope != null) {
-            emit(Log.INFO, "package loaded package=" + param.getPackageName()
-                    + " process=" + processName
-                    + " first=" + param.isFirstPackage());
-        }
+        emit(Log.INFO,
+                "module loaded process=" + processName
+                        + " sdk=" + Build.VERSION.SDK_INT
+                        + " api=" + getApiVersion()
+                        + " version=" + BuildConfig.VERSION_CODE);
     }
 
     @Override
     public void onPackageReady(PackageReadyParam param) {
+        if (!param.isFirstPackage()) {
+            return;
+        }
+
         Scope scope = Scope.fromPackage(param.getPackageName());
         if (scope == null) {
             return;
         }
 
-        emit(Log.INFO, "package ready package=" + param.getPackageName()
-                + " process=" + processName
-                + " first=" + param.isFirstPackage());
-
-        if (!param.isFirstPackage()) {
-            return;
-        }
-
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
-            emit(Log.INFO, "SDK < 36; target left untouched: " + scope.packageName);
+            emit(Log.INFO,
+                    "SDK < 36; target left untouched: " + scope.packageName);
             return;
-        }
-
-        if (processName == null || processName.isBlank()) {
-            processName = scope.packageName;
         }
 
         ClassLoader classLoader = param.getClassLoader();
         reloadState = Pair.create(
                 Pair.create(scope.packageName, processName),
                 classLoader);
+
         installForScope(scope, classLoader, false);
     }
 
@@ -120,10 +106,6 @@ public final class AcceleratorModule extends XposedModule {
     public boolean onHotReloading(HotReloadingParam param) {
         if (reloadState != null) {
             param.setSavedInstanceState(reloadState);
-            emit(Log.INFO, "hot reload preparing scope=" + reloadState.first.first
-                    + " process=" + reloadState.first.second);
-        } else {
-            emit(Log.WARN, "hot reload preparing without saved target context");
         }
         return true;
     }
@@ -148,26 +130,20 @@ public final class AcceleratorModule extends XposedModule {
                 && legacy.second instanceof ClassLoader savedLoader) {
             packageName = savedPackage;
             classLoader = savedLoader;
-            emit(Log.INFO, "hot reload migrated legacy saved-state schema");
         }
 
         if (classLoader == null) {
             classLoader = recoverTargetClassLoader(param);
         }
 
-        if (savedProcessName == null || savedProcessName.isBlank()) {
-            savedProcessName = param.getProcessName();
-        }
         processName = savedProcessName == null ? "" : savedProcessName;
-
-        Scope scope = packageName == null ? null : Scope.fromPackage(packageName);
-        if (scope == null) {
-            scope = inferScope(processName, classLoader);
-        }
+        Scope scope = packageName == null
+                ? Scope.fromPackage(processName)
+                : Scope.fromPackage(packageName);
 
         if (scope == null || classLoader == null) {
-            emit(Log.ERROR, "hot reload recovery failed; preserving old hooks process="
-                    + processName);
+            emit(Log.ERROR,
+                    "hot reload recovery failed process=" + processName);
             return;
         }
 
@@ -175,357 +151,490 @@ public final class AcceleratorModule extends XposedModule {
                 Pair.create(scope.packageName, processName),
                 classLoader);
 
-        boolean installed = false;
         try {
+            resetGenerationState();
             installForScope(scope, classLoader, true);
-            installed = true;
-            emit(Log.INFO, "hot reload complete scope=" + scope.packageName
-                    + " process=" + processName);
-        } catch (Throwable t) {
-            emit(Log.ERROR, "hot reload install failed; preserving old hooks scope="
-                    + scope.packageName, t);
-        }
-
-        if (installed) {
             unhookUnknownOldHandles(param);
+            emit(Log.INFO,
+                    "hot reload complete scope=" + scope.packageName);
+        } catch (Throwable t) {
+            emit(Log.ERROR,
+                    "hot reload failed scope=" + scope.packageName, t);
         }
     }
 
-    private ClassLoader recoverTargetClassLoader(HotReloadedParam param) {
+    private void resetGenerationState() {
+        providerInstalled.set(false);
+        downloadsUiSeen.set(false);
+        systemUiSeen.set(false);
+        providerHookCount = 0;
+        providerDeoptimizedCount = 0;
+        downloadsUiClassCount = 0;
+        systemUiClassCount = 0;
+        hookedIds.clear();
+        connectionClassHooks.clear();
+        dynamicFactoryHooks.clear();
+    }
+
+    private ClassLoader recoverTargetClassLoader(
+            HotReloadedParam param) {
         try {
-            for (XposedInterface.HookHandle handle : param.getOldHookHandles()) {
+            for (XposedInterface.HookHandle handle
+                    : param.getOldHookHandles()) {
                 Executable executable = handle.getExecutable();
-                if (executable != null && executable.getDeclaringClass() != null) {
-                    ClassLoader loader = executable.getDeclaringClass().getClassLoader();
+                if (executable != null
+                        && executable.getDeclaringClass() != null) {
+                    ClassLoader loader =
+                            executable.getDeclaringClass().getClassLoader();
                     if (loader != null) {
-                        emit(Log.INFO, "hot reload recovered ClassLoader from old hook");
                         return loader;
                     }
                 }
             }
         } catch (Throwable t) {
-            emit(Log.WARN, "old-hook ClassLoader recovery failed", t);
+            emit(Log.WARN,
+                    "old-hook ClassLoader recovery failed", t);
         }
-
-        try {
-            ClassLoader loader = Thread.currentThread().getContextClassLoader();
-            if (loader != null) {
-                emit(Log.INFO, "hot reload using thread context ClassLoader");
-                return loader;
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
+        return Thread.currentThread().getContextClassLoader();
     }
 
-    private Scope inferScope(String process, ClassLoader classLoader) {
-        Scope direct = Scope.fromPackage(process);
-        if (direct != null) {
-            return direct;
-        }
-        if (classLoader == null) {
-            return null;
-        }
-
-        try {
-            classLoader.loadClass("com.android.providers.downloads.DownloadThread");
-            return Scope.PROVIDER;
-        } catch (Throwable ignored) {
-        }
-
-        if (Probe.countAvailable(classLoader, DOWNLOADS_UI_CLASSES) > 0) {
-            return Scope.DOWNLOADS_UI;
-        }
-
-        if (Probe.countAvailable(classLoader, SYSTEM_UI_CLASSES) > 0) {
-            return Scope.SYSTEM_UI;
-        }
-
-        return null;
-    }
-
-    private void installForScope(Scope scope, ClassLoader classLoader, boolean hotReload) {
-        int evidenceCount;
+    private void installForScope(
+            Scope scope,
+            ClassLoader classLoader,
+            boolean hotReload) {
+        int evidence;
         switch (scope) {
             case PROVIDER:
-                evidenceCount = installProviderHooks(classLoader);
+                evidence = installProviderAdapter(classLoader);
                 break;
             case DOWNLOADS_UI:
-                evidenceCount = probeDownloadsUi(classLoader);
+                evidence = probeDownloadsUi(classLoader);
                 break;
             case SYSTEM_UI:
-                evidenceCount = probeSystemUi(classLoader);
+                evidence = probeSystemUi(classLoader);
                 break;
             default:
-                evidenceCount = 0;
-                break;
+                evidence = 0;
         }
 
-        emit(Log.INFO, "scope ready scope=" + scope.packageName
-                + " process=" + processName
-                + " evidence=" + evidenceCount
-                + " hotReload=" + hotReload);
+        emit(Log.INFO,
+                "scope ready scope=" + scope.packageName
+                        + " evidence=" + evidence
+                        + " hotReload=" + hotReload);
     }
 
-    private int installProviderHooks(ClassLoader classLoader) {
+    private int installProviderAdapter(ClassLoader classLoader) {
         if (!providerInstalled.compareAndSet(false, true)) {
             return providerHookCount;
         }
 
         try {
             Class<?> downloadThread =
-                    classLoader.loadClass("com.android.providers.downloads.DownloadThread");
-            Method[] methods = downloadThread.getDeclaredMethods();
+                    classLoader.loadClass(
+                            "com.android.providers.downloads.DownloadThread");
 
-            int deoptimized = 0;
-            int deoptFailed = 0;
-
-            /*
-             * We intentionally deoptimize the complete DownloadThread body.
-             * Private transfer helpers are common ART inlining targets, and on
-             * OEM builds the caller graph can differ from AOSP. Network I/O
-             * dominates this class, so interpreter overhead here is negligible
-             * compared with missing the actual transfer path.
-             */
-            for (Method method : methods) {
-                int modifiers = method.getModifiers();
-                if (Modifier.isAbstract(modifiers) || Modifier.isNative(modifiers)) {
-                    continue;
-                }
-                method.setAccessible(true);
-                try {
-                    if (deoptimize(method)) {
-                        deoptimized++;
-                    } else {
-                        deoptFailed++;
-                    }
-                } catch (Throwable t) {
-                    deoptFailed++;
-                    emit(Log.DEBUG,
-                            "deoptimize unavailable for " + method.toGenericString(), t);
-                }
-            }
+            providerDeoptimizedCount =
+                    deoptimizeDownloadThread(downloadThread);
 
             int count = 0;
-            int connectionCandidates = 0;
-            StringBuilder inventory = new StringBuilder();
-
-            for (Method method : methods) {
-                if (!shouldHookProviderMethod(method)) {
+            for (Method method : downloadThread.getDeclaredMethods()) {
+                if (!"run".equals(method.getName())
+                        || method.getParameterCount() != 0) {
                     continue;
                 }
-
                 method.setAccessible(true);
-                boolean declaredConnection = hasDeclaredHttpConnection(method);
-                installProviderProbe(method, declaredConnection);
+                installRunContextHook(method);
                 count++;
-
-                if (declaredConnection) {
-                    connectionCandidates++;
-                }
-
-                if (inventory.length() < 1800) {
-                    if (inventory.length() > 0) {
-                        inventory.append(" | ");
-                    }
-                    inventory.append(method.getName())
-                            .append("(");
-                    Class<?>[] params = method.getParameterTypes();
-                    for (int i = 0; i < params.length; i++) {
-                        if (i > 0) inventory.append(",");
-                        inventory.append(params[i].getSimpleName());
-                    }
-                    inventory.append(")");
-                    if (declaredConnection) {
-                        inventory.append("[HTTP]");
-                    }
-                }
             }
 
-            providerHookCount = count;
-            providerDeoptimizedCount = deoptimized;
-            providerDeoptFailedCount = deoptFailed;
-            providerConnectionCandidateCount = connectionCandidates;
-            providerHookInventory = inventory.toString();
+            count += installNetworkOpenHooks();
+            count += installUrlOpenHooks();
 
-            emit(Log.INFO, "provider hooks installed=" + count
-                    + " httpCandidates=" + connectionCandidates
-                    + " deoptimized=" + deoptimized
-                    + " deoptFailed=" + deoptFailed
-                    + " inventory=" + providerHookInventory);
+            providerHookCount = count;
+            emit(Log.INFO,
+                    "provider adapter installed hooks=" + count
+                            + " deoptimized=" + providerDeoptimizedCount);
             return count;
         } catch (Throwable t) {
             providerInstalled.set(false);
             providerHookCount = 0;
-            providerDeoptimizedCount = 0;
-            providerDeoptFailedCount = 0;
-            providerConnectionCandidateCount = 0;
-            providerHookInventory = "";
-            emit(Log.ERROR, "provider hook install unavailable; native path preserved", t);
+            emit(Log.ERROR,
+                    "provider adapter install failed; native path preserved",
+                    t);
             return 0;
         }
     }
 
-    private boolean shouldHookProviderMethod(Method method) {
-        String name = method.getName();
-        if ("run".equals(name)
-                || PROVIDER_METHODS.contains(name)
-                || hasDeclaredHttpConnection(method)) {
-            return true;
-        }
-
-        String lower = name.toLowerCase(java.util.Locale.ROOT);
-        return lower.contains("execute")
-                || lower.contains("download")
-                || lower.contains("transfer");
-    }
-
-    private boolean hasDeclaredHttpConnection(Method method) {
-        for (Class<?> type : method.getParameterTypes()) {
-            if (HttpURLConnection.class.isAssignableFrom(type)
-                    || type.isAssignableFrom(HttpURLConnection.class)) {
-                return true;
+    private int deoptimizeDownloadThread(Class<?> type) {
+        int success = 0;
+        for (Method method : type.getDeclaredMethods()) {
+            int modifiers = method.getModifiers();
+            if (Modifier.isAbstract(modifiers)
+                    || Modifier.isNative(modifiers)) {
+                continue;
+            }
+            try {
+                method.setAccessible(true);
+                if (deoptimize(method)) {
+                    success++;
+                }
+            } catch (Throwable ignored) {
             }
         }
-        return false;
+        return success;
     }
 
-    private void installProviderProbe(Method method, boolean declaredConnection) {
-        String id = HOOK_PREFIX + method.toGenericString();
-        hookedIds.add(id);
-
-        final String methodName = method.getName();
-        final boolean runEntry = "run".equals(methodName);
-        final boolean executeEntry =
-                methodName.toLowerCase(java.util.Locale.ROOT).contains("execute");
-        final boolean headerMethod = "addRequestHeaders".equals(methodName);
-        final boolean canReturnVoid = method.getReturnType() == void.class;
+    private void installRunContextHook(Method method) {
+        String id = ID_PREFIX + "run:" + method.toGenericString();
+        if (!hookedIds.add(id)) {
+            return;
+        }
 
         hook(method)
                 .setId(id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    long startedNs = SystemClock.elapsedRealtimeNanos();
-                    Object thisObject = chain.getThisObject();
-                    Context targetContext = resolveTargetContext(thisObject);
-                    java.util.List<Object> args = chain.getArgs();
+                    Object thread = chain.getThisObject();
+                    ConnectionRegistry.ProviderExecution execution =
+                            resolveProviderExecution(thread);
 
-                    if (runEntry) {
-                        ProbeSnapshot snapshot = DownloadInfoInspector.inspect(thisObject);
-                        emit(Log.INFO, "download start " + snapshot.toSafeLogString());
-
+                    if (execution != null) {
+                        ConnectionRegistry.enterProviderExecution(execution);
+                        installHttpEngineFactoryHook(thread, execution);
                         EngineTelemetry.emit(
-                                targetContext,
-                                "HOOK_MAP",
-                                "hooks=" + providerHookCount
-                                        + " httpCandidates=" + providerConnectionCandidateCount
-                                        + " deopt=" + providerDeoptimizedCount
-                                        + " failed=" + providerDeoptFailedCount
-                                        + " :: " + providerHookInventory);
-                    }
-
-                    if (executeEntry) {
-                        EngineTelemetry.emit(
-                                targetContext,
-                                "EXECUTE_ENTRY",
-                                method.toGenericString()
-                                        + " args=[" + describeArgs(args) + "]");
-                    }
-
-                    HttpURLConnection connection = findHttpConnection(args);
-
-                    if (connection != null && !headerMethod && canReturnVoid) {
-                        String signature = method.toGenericString();
-                        EngineTelemetry.emit(
-                                targetContext,
-                                "HTTP_METHOD_ENTRY",
-                                signature + " args=[" + describeArgs(args) + "]");
-                        emit(Log.INFO, "HTTP-bearing method entered signature="
-                                + signature + " declaredHttp=" + declaredConnection
-                                + " args=[" + describeArgs(args) + "]");
-
-                        try {
-                            if (SegmentedTransfer.tryAccelerate(thisObject, connection)) {
-                                EngineTelemetry.emit(
-                                        targetContext,
-                                        "INTERCEPTED",
-                                        signature);
-                                emit(Log.INFO,
-                                        "HTTP-bearing method handled by segmented engine");
-                                return null;
-                            }
-                        } catch (Throwable t) {
-                            EngineTelemetry.emit(
-                                    targetContext,
-                                    "ERROR",
-                                    "interceptor: " + t.getClass().getSimpleName()
-                                            + ": " + String.valueOf(t.getMessage()));
-                            emit(Log.WARN,
-                                    "segmented engine interceptor failed; native fallback", t);
-                        }
+                                execution.context,
+                                "CORE_ARMED",
+                                "AB-style stream adapter armed");
                     }
 
                     try {
                         return chain.proceed();
                     } finally {
-                        long elapsedMs =
-                                (SystemClock.elapsedRealtimeNanos() - startedNs) / 1_000_000L;
-                        if (runEntry || executeEntry) {
-                            emit(Log.DEBUG,
-                                    methodName + " finished in " + elapsedMs + " ms");
-                        }
+                        ConnectionRegistry.leaveProviderExecution();
                     }
                 });
     }
 
-    private HttpURLConnection findHttpConnection(java.util.List<Object> args) {
-        for (Object arg : args) {
-            if (arg instanceof HttpURLConnection) {
-                return (HttpURLConnection) arg;
+    private int installNetworkOpenHooks() {
+        int count = 0;
+        for (Method method : Network.class.getDeclaredMethods()) {
+            if (!"openConnection".equals(method.getName())) {
+                continue;
             }
+
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length < 1
+                    || params[0] != URL.class) {
+                continue;
+            }
+
+            method.setAccessible(true);
+            String id = ID_PREFIX + "network:" + method.toGenericString();
+            if (!hookedIds.add(id)) {
+                continue;
+            }
+
+            hook(method)
+                    .setId(id)
+                    .setExceptionMode(
+                            XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (!ConnectionRegistry.isInternalRequest()
+                                && result instanceof HttpURLConnection
+                                && chain.getThisObject() instanceof Network) {
+                            observeConnection(
+                                    (HttpURLConnection) result,
+                                    (Network) chain.getThisObject());
+                        }
+                        return result;
+                    });
+            count++;
         }
-        return null;
+        return count;
     }
 
-    private String describeArgs(java.util.List<Object> args) {
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < args.size(); i++) {
-            if (i > 0) out.append(", ");
-            Object arg = args.get(i);
-            out.append(arg == null ? "null" : arg.getClass().getName());
+    private int installUrlOpenHooks() {
+        int count = 0;
+        for (Method method : URL.class.getDeclaredMethods()) {
+            if (!"openConnection".equals(method.getName())) {
+                continue;
+            }
+
+            method.setAccessible(true);
+            String id = ID_PREFIX + "url:" + method.toGenericString();
+            if (!hookedIds.add(id)) {
+                continue;
+            }
+
+            hook(method)
+                    .setId(id)
+                    .setExceptionMode(
+                            XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (!ConnectionRegistry.isInternalRequest()
+                                && result instanceof HttpURLConnection) {
+                            observeConnection(
+                                    (HttpURLConnection) result,
+                                    null);
+                        }
+                        return result;
+                    });
+            count++;
         }
-        return out.toString();
+        return count;
     }
 
-    private Context resolveTargetContext(Object thread) {
-        if (thread == null) {
+    private void installHttpEngineFactoryHook(
+            Object downloadThread,
+            ConnectionRegistry.ProviderExecution execution) {
+        Object engine = getFieldQuietly(downloadThread, "mHttpEngine");
+        if (engine == null) {
+            return;
+        }
+
+        for (Method method : engine.getClass().getMethods()) {
+            if (!"openConnection".equals(method.getName())) {
+                continue;
+            }
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length < 1
+                    || params[0] != URL.class) {
+                continue;
+            }
+
+            String key =
+                    engine.getClass().getName()
+                            + "#"
+                            + method.toGenericString();
+            if (!dynamicFactoryHooks.add(key)) {
+                continue;
+            }
+
+            method.setAccessible(true);
+            String id = ID_PREFIX + "engine:" + key;
+            hookedIds.add(id);
+
+            hook(method)
+                    .setId(id)
+                    .setExceptionMode(
+                            XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (!ConnectionRegistry.isInternalRequest()
+                                && result instanceof HttpURLConnection) {
+                            observeConnection(
+                                    (HttpURLConnection) result,
+                                    execution.network);
+                        }
+                        return result;
+                    });
+        }
+    }
+
+    private void observeConnection(
+            HttpURLConnection connection,
+            Network network) {
+        ConnectionRegistry.Metadata metadata =
+                ConnectionRegistry.register(connection, network);
+        ensureConnectionClassHooks(connection.getClass());
+
+        EngineTelemetry.emit(
+                metadata.context,
+                "CONNECTION",
+                connection.getClass().getName()
+                        + " url=" + safeUrl(connection.getURL()));
+    }
+
+    private void ensureConnectionClassHooks(Class<?> concreteClass) {
+        hookConnectionMethod(
+                concreteClass,
+                "setRequestProperty",
+                new Class<?>[]{String.class, String.class},
+                HookKind.SET_HEADER);
+        hookConnectionMethod(
+                concreteClass,
+                "addRequestProperty",
+                new Class<?>[]{String.class, String.class},
+                HookKind.ADD_HEADER);
+        hookConnectionMethod(
+                concreteClass,
+                "getInputStream",
+                new Class<?>[0],
+                HookKind.GET_STREAM);
+    }
+
+    private enum HookKind {
+        SET_HEADER,
+        ADD_HEADER,
+        GET_STREAM
+    }
+
+    private void hookConnectionMethod(
+            Class<?> concreteClass,
+            String name,
+            Class<?>[] params,
+            HookKind kind) {
+        Method method;
+        try {
+            method = concreteClass.getMethod(name, params);
+            method.setAccessible(true);
+        } catch (Throwable t) {
+            emit(Log.DEBUG,
+                    "connection method unavailable "
+                            + concreteClass.getName()
+                            + "#"
+                            + name);
+            return;
+        }
+
+        String key =
+                method.getDeclaringClass().getName()
+                        + "#"
+                        + method.toGenericString()
+                        + ":"
+                        + kind;
+        if (!connectionClassHooks.add(key)) {
+            return;
+        }
+
+        String id = ID_PREFIX + "conn:" + key;
+        hookedIds.add(id);
+
+        hook(method)
+                .setId(id)
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .intercept(chain -> {
+                    Object thisObject = chain.getThisObject();
+                    if (!(thisObject instanceof HttpURLConnection)) {
+                        return chain.proceed();
+                    }
+
+                    HttpURLConnection connection =
+                            (HttpURLConnection) thisObject;
+
+                    if (kind == HookKind.GET_STREAM) {
+                        if (ConnectionRegistry.isInternalRequest()) {
+                            return chain.proceed();
+                        }
+
+                        ConnectionRegistry.Metadata metadata =
+                                ConnectionRegistry.get(connection);
+                        if (metadata == null) {
+                            return chain.proceed();
+                        }
+
+                        InputStream parallel =
+                                ParallelRangeEngine.maybeCreate(
+                                        connection,
+                                        metadata);
+                        if (parallel != null) {
+                            EngineTelemetry.emit(
+                                    metadata.context,
+                                    "STREAM_REPLACED",
+                                    "native response body replaced");
+                            return parallel;
+                        }
+                        return chain.proceed();
+                    }
+
+                    Object result = chain.proceed();
+                    if (!ConnectionRegistry.isInternalRequest()) {
+                        java.util.List<Object> args = chain.getArgs();
+                        if (args.size() >= 2
+                                && args.get(0) instanceof String
+                                && args.get(1) instanceof String) {
+                            if (kind == HookKind.SET_HEADER) {
+                                ConnectionRegistry.recordSet(
+                                        connection,
+                                        (String) args.get(0),
+                                        (String) args.get(1));
+                            } else {
+                                ConnectionRegistry.recordAdd(
+                                        connection,
+                                        (String) args.get(0),
+                                        (String) args.get(1));
+                            }
+                        }
+                    }
+                    return result;
+                });
+    }
+
+    private ConnectionRegistry.ProviderExecution resolveProviderExecution(
+            Object thread) {
+        if (thread == null) return null;
+
+        Context context =
+                (Context) getFieldQuietly(thread, "mContext");
+        Network network =
+                (Network) getFieldQuietly(thread, "mNetwork");
+        Object info =
+                getFieldQuietly(thread, "mInfo");
+        int uid = getIntFieldQuietly(info, "mUid", -1);
+
+        if (context == null) {
             return null;
         }
-        Class<?> cursor = thread.getClass();
+
+        return new ConnectionRegistry.ProviderExecution(
+                context,
+                network,
+                uid);
+    }
+
+    private Object getFieldQuietly(
+            Object target,
+            String name) {
+        if (target == null) return null;
+
+        Class<?> cursor = target.getClass();
         while (cursor != null) {
             try {
-                java.lang.reflect.Field field = cursor.getDeclaredField("mContext");
+                Field field = cursor.getDeclaredField(name);
                 field.setAccessible(true);
-                Object value = field.get(thread);
-                return value instanceof Context ? (Context) value : null;
-            } catch (NoSuchFieldException ignored) {
+                return field.get(target);
+            } catch (NoSuchFieldException e) {
                 cursor = cursor.getSuperclass();
             } catch (Throwable t) {
-                emit(Log.DEBUG, "unable to resolve target context", t);
                 return null;
             }
         }
         return null;
     }
 
-    private void unhookUnknownOldHandles(HotReloadedParam param) {
+    private int getIntFieldQuietly(
+            Object target,
+            String name,
+            int fallback) {
+        if (target == null) return fallback;
+
+        Class<?> cursor = target.getClass();
+        while (cursor != null) {
+            try {
+                Field field = cursor.getDeclaredField(name);
+                field.setAccessible(true);
+                return field.getInt(target);
+            } catch (NoSuchFieldException e) {
+                cursor = cursor.getSuperclass();
+            } catch (Throwable t) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private void unhookUnknownOldHandles(
+            HotReloadedParam param) {
         param.getOldHookHandles().forEach(handle -> {
             String id = handle.getId();
             if (id == null || !hookedIds.contains(id)) {
                 try {
                     handle.unhook();
                 } catch (Throwable t) {
-                    emit(Log.WARN, "unable to remove stale hook", t);
+                    emit(Log.WARN,
+                            "unable to remove stale hook", t);
                 }
             }
         });
@@ -537,9 +646,9 @@ public final class AcceleratorModule extends XposedModule {
         }
 
         downloadsUiClassCount =
-                Probe.countAvailable(classLoader, DOWNLOADS_UI_CLASSES);
-        emit(Log.INFO, "downloads-ui classes=" + downloadsUiClassCount
-                + "/" + DOWNLOADS_UI_CLASSES.length);
+                Probe.countAvailable(
+                        classLoader,
+                        DOWNLOADS_UI_CLASSES);
         return downloadsUiClassCount;
     }
 
@@ -549,10 +658,30 @@ public final class AcceleratorModule extends XposedModule {
         }
 
         systemUiClassCount =
-                Probe.countAvailable(classLoader, SYSTEM_UI_CLASSES);
-        emit(Log.INFO, "systemui classes=" + systemUiClassCount
-                + "/" + SYSTEM_UI_CLASSES.length);
+                Probe.countAvailable(
+                        classLoader,
+                        SYSTEM_UI_CLASSES);
         return systemUiClassCount;
+    }
+
+    private static String safeUrl(URL url) {
+        if (url == null) return "(null)";
+        String protocol = url.getProtocol();
+        String host = url.getHost();
+        int port = url.getPort();
+
+        StringBuilder out = new StringBuilder();
+        if (protocol != null) {
+            out.append(protocol).append("://");
+        }
+        if (host != null) {
+            out.append(host);
+        }
+        if (port >= 0) {
+            out.append(":").append(port);
+        }
+        out.append("/…");
+        return out.toString();
     }
 
     private void emit(int priority, String message) {
@@ -566,13 +695,20 @@ public final class AcceleratorModule extends XposedModule {
         }
     }
 
-    private void emit(int priority, String message, Throwable throwable) {
+    private void emit(
+            int priority,
+            String message,
+            Throwable throwable) {
         try {
             log(priority, TAG, message, throwable);
         } catch (Throwable ignored) {
         }
         try {
-            Log.println(priority, TAG, message + "\n" + Log.getStackTraceString(throwable));
+            Log.println(
+                    priority,
+                    TAG,
+                    message + "\n"
+                            + Log.getStackTraceString(throwable));
         } catch (Throwable ignored) {
         }
     }

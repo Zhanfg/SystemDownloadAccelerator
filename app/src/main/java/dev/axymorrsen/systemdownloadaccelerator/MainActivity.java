@@ -262,7 +262,7 @@ public final class MainActivity extends Activity {
         TextView note = text(
                 "状态以 LSPosed API 102 的 runningTargets 为准。DownloadProvider 和 "
                         + "Downloads UI 都可能在空闲时退出，因此“不在运行”不等于模块失效；"
-                        + "自检会验证真实 Range 探测与并行分段，而不只是验证原生下载能否完成。",
+                        + "自检会验证连接创建、响应流替换、Range 探测与并行微分片，而不再依赖 DownloadProvider 私有 transferData 方法。",
                 12, MUTED, false);
         note.setLineSpacing(0f, 1.18f);
         LinearLayout.LayoutParams noteLp = wrap();
@@ -278,7 +278,7 @@ public final class MainActivity extends Activity {
         selfTestStatus.setText("正在准备本地 DownloadManager 测试");
         selfTestStatus.setTextColor(AMBER);
         engineEvents.clear();
-        engineDiag.setText("引擎事件：\n等待 transferData 拦截");
+        engineDiag.setText("引擎事件：\n等待连接流接管");
         engineDiag.setTextColor(MUTED);
 
         DownloadSelfTest.run(this, (message, terminal, success) ->
