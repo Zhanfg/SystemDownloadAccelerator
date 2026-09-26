@@ -5,6 +5,7 @@ plugins {
 android {
     namespace = "dev.axymorrsen.systemdownloadaccelerator"
     compileSdk = 37
+    compileSdkMinor = 0
 
     defaultConfig {
         applicationId = "dev.axymorrsen.systemdownloadaccelerator"
