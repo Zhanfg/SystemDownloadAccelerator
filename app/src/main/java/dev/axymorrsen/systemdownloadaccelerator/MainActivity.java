@@ -1,7 +1,8 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
 import android.app.Activity;
-import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -16,25 +17,20 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import java.text.DateFormat;
 import java.util.Collections;
-import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 import io.github.libxposed.service.HookedTarget;
 import io.github.libxposed.service.XposedService;
 
 /**
- * Runtime diagnostics UI.
+ * Runtime diagnostics UI backed by XposedService API 102.
  *
- * It deliberately distinguishes:
- *  1. framework service connection,
- *  2. framework scope enablement,
- *  3. a currently running injected process,
- *  4. this APK generation actually reporting from that target.
+ * getRunningTargets() + loadedVersionCode + target state are the authoritative
+ * activation signal. RemotePreferences are intentionally not used for target
+ * heartbeats because injected module processes only receive a read-only view.
  */
 public final class MainActivity extends Activity {
     private static final int BG = Color.rgb(245, 246, 250);
@@ -44,7 +40,6 @@ public final class MainActivity extends Activity {
     private static final int GREEN = Color.rgb(24, 140, 76);
     private static final int AMBER = Color.rgb(184, 112, 0);
     private static final int RED = Color.rgb(190, 45, 45);
-    private static final int BLUE = Color.rgb(51, 92, 255);
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable serviceListener = () -> runOnUiThread(this::refresh);
@@ -62,7 +57,6 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
-
         setContentView(buildUi());
         ModuleApp.addListener(serviceListener);
         refresh();
@@ -92,8 +86,7 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView title = text("System Download Accelerator", 27, TEXT, true);
-        root.addView(title);
+        root.addView(text("System Download Accelerator", 27, TEXT, true));
 
         TextView subtitle = text("系统下载加速 · LSPosed API 102", 14, MUTED, false);
         LinearLayout.LayoutParams subtitleLp = wrap();
@@ -130,15 +123,18 @@ public final class MainActivity extends Activity {
         providerCard = new StatusCard(
                 "DownloadProvider",
                 "com.android.providers.downloads",
-                "真实下载传输与状态源");
+                "真实下载传输与状态源",
+                false);
         downloadsUiCard = new StatusCard(
                 "Downloads UI",
                 "com.android.providers.downloads.ui",
-                "下载列表与控制界面");
+                "下载列表与控制界面 · 按需加载",
+                true);
         systemUiCard = new StatusCard(
                 "SystemUI",
                 "com.android.systemui",
-                "通知与系统界面");
+                "通知与系统界面",
+                false);
 
         root.addView(providerCard.root, cardLp());
         root.addView(downloadsUiCard.root, cardLp());
@@ -154,8 +150,9 @@ public final class MainActivity extends Activity {
         root.addView(refreshButton, buttonLp);
 
         TextView note = text(
-                "“已加载”要求同时看到 LSPosed 服务、Scope、正在运行的目标进程，"
-                        + "以及当前 APK generation 的运行时回执。仅安装 APK 不会被判定为已激活。",
+                "状态以 LSPosed API 102 的 runningTargets 为准：Scope、目标 PID、"
+                        + "框架状态和 loadedVersionCode 全部一致时才显示“已加载”。"
+                        + "Downloads UI 是按需进程，未运行不影响下载核心激活。",
                 12, MUTED, false);
         note.setLineSpacing(0f, 1.18f);
         LinearLayout.LayoutParams noteLp = wrap();
@@ -187,24 +184,18 @@ public final class MainActivity extends Activity {
             int api = service.getApiVersion();
             String frameworkLabel = service.getFrameworkName()
                     + " " + service.getFrameworkVersion();
-            long properties = service.getFrameworkProperties();
             Set<String> scopes = new HashSet<>(service.getScope());
 
             List<HookedTarget> targets = api >= XposedService.API_102
                     ? service.getRunningTargets()
                     : Collections.emptyList();
 
-            SharedPreferences runtime = null;
-            if ((properties & XposedService.PROP_CAP_REMOTE) != 0L) {
-                runtime = service.getRemotePreferences("runtime");
-            }
-
             ScopeStatus provider = scopeStatus(
-                    "com.android.providers.downloads", scopes, targets, runtime);
+                    "com.android.providers.downloads", scopes, targets);
             ScopeStatus downloadsUi = scopeStatus(
-                    "com.android.providers.downloads.ui", scopes, targets, runtime);
+                    "com.android.providers.downloads.ui", scopes, targets);
             ScopeStatus systemUi = scopeStatus(
-                    "com.android.systemui", scopes, targets, runtime);
+                    "com.android.systemui", scopes, targets);
 
             return new StatusReport(
                     true, api, frameworkLabel, provider, downloadsUi, systemUi, null);
@@ -225,72 +216,68 @@ public final class MainActivity extends Activity {
     private ScopeStatus scopeStatus(
             String packageName,
             Set<String> scopes,
-            List<HookedTarget> targets,
-            SharedPreferences runtime) {
+            List<HookedTarget> targets) {
         boolean inScope = scopes.contains(packageName);
-        String prefix = "scope." + packageName + ".";
+        int uid = resolvePackageUid(packageName);
+        HookedTarget target = findTarget(targets, packageName, uid);
 
-        String process = runtime == null
-                ? ""
-                : runtime.getString(prefix + "process", "");
-        long reportedVersion = runtime == null
-                ? 0L
-                : runtime.getLong(prefix + "version", 0L);
-        long loadedAt = runtime == null
-                ? 0L
-                : runtime.getLong(prefix + "loadedAt", 0L);
-        long lastReload = runtime == null
-                ? 0L
-                : runtime.getLong(prefix + "lastReload", 0L);
-        int evidenceCount = runtime == null
-                ? 0
-                : runtime.getInt(prefix + "evidenceCount", 0);
-
-        HookedTarget target = findTarget(targets, process, packageName);
         boolean running = target != null;
+        String process = running && target.getProcessName() != null
+                ? target.getProcessName()
+                : "";
         String state = running ? target.getState().name() : "";
         long loadedVersion = running ? target.getLoadedVersionCode() : 0L;
         int pid = running ? target.getPid() : 0;
 
         boolean currentGeneration = running
                 && loadedVersion == BuildConfig.VERSION_CODE
-                && reportedVersion == BuildConfig.VERSION_CODE
                 && target.getState() == HookedTarget.State.UP_TO_DATE;
 
         return new ScopeStatus(
                 packageName,
                 inScope,
+                uid,
                 process,
                 running,
                 state,
                 pid,
                 loadedVersion,
-                reportedVersion,
-                loadedAt,
-                lastReload,
-                evidenceCount,
                 currentGeneration,
                 false);
     }
 
     private HookedTarget findTarget(
-            List<HookedTarget> targets, String process, String packageName) {
-        if (targets == null) return null;
-
-        if (process != null && !process.isBlank()) {
-            for (HookedTarget target : targets) {
-                if (process.equals(target.getProcessName())) {
-                    return target;
-                }
-            }
+            List<HookedTarget> targets, String packageName, int packageUid) {
+        if (targets == null) {
+            return null;
         }
 
+        // Exact process name is the strongest match.
         for (HookedTarget target : targets) {
             if (packageName.equals(target.getProcessName())) {
                 return target;
             }
         }
+
+        // Downloads UI and other system packages may live in a shared OEM process.
+        if (packageUid >= 0) {
+            for (HookedTarget target : targets) {
+                if (target.getUid() == packageUid) {
+                    return target;
+                }
+            }
+        }
+
         return null;
+    }
+
+    private int resolvePackageUid(String packageName) {
+        try {
+            ApplicationInfo info = getPackageManager().getApplicationInfo(packageName, 0);
+            return info.uid;
+        } catch (PackageManager.NameNotFoundException e) {
+            return -1;
+        }
     }
 
     private void render(StatusReport report) {
@@ -320,19 +307,26 @@ public final class MainActivity extends Activity {
                     + " (" + BuildConfig.VERSION_CODE + ") · 热重载 "
                     + (report.apiVersion >= XposedService.API_102 ? "可用" : "不可用"));
 
-            int active = 0;
-            if (report.provider.currentGeneration) active++;
-            if (report.downloadsUi.currentGeneration) active++;
-            if (report.systemUi.currentGeneration) active++;
+            boolean providerReady = report.provider.currentGeneration;
+            boolean systemUiReady = report.systemUi.currentGeneration;
+            boolean downloadsUiReady = report.downloadsUi.currentGeneration;
 
-            if (active == 3) {
-                overall.setText("已激活 · 3/3 目标已加载");
+            if (providerReady && systemUiReady) {
+                if (downloadsUiReady) {
+                    overall.setText("已激活 · 3/3 当前目标已加载");
+                } else if (report.downloadsUi.inScope && !report.downloadsUi.running) {
+                    overall.setText("核心已激活 · Downloads UI 按需加载");
+                } else {
+                    overall.setText("核心已激活 · 2/2 常驻目标已加载");
+                }
                 overall.setTextColor(GREEN);
-            } else if (active > 0) {
-                overall.setText("部分激活 · " + active + "/3 目标已加载");
-                overall.setTextColor(AMBER);
             } else {
-                overall.setText("框架已连接 · 等待目标加载");
+                int core = (providerReady ? 1 : 0) + (systemUiReady ? 1 : 0);
+                if (core > 0) {
+                    overall.setText("部分激活 · " + core + "/2 常驻目标已加载");
+                } else {
+                    overall.setText("框架已连接 · 等待核心目标加载");
+                }
                 overall.setTextColor(AMBER);
             }
         }
@@ -348,8 +342,10 @@ public final class MainActivity extends Activity {
         final TextView packageName;
         final TextView state;
         final TextView detail;
+        final boolean optional;
 
-        StatusCard(String title, String pkg, String description) {
+        StatusCard(String title, String pkg, String description, boolean optional) {
+            this.optional = optional;
             root = cardContainer();
 
             name = text(title, 17, TEXT, true);
@@ -393,50 +389,44 @@ public final class MainActivity extends Activity {
             }
 
             if (!s.running) {
-                state.setText(s.process.isBlank() ? "等待首次加载" : "目标进程未运行");
-                state.setTextColor(AMBER);
-                detail.setText(s.process.isBlank()
-                        ? "Scope 已启用，但还没有收到运行时回执"
-                        : "Scope 已启用 · 上次进程 " + s.process);
+                state.setText(optional ? "Scope 已启用 · 当前未运行" : "Scope 已启用 · 等待进程");
+                state.setTextColor(optional ? MUTED : AMBER);
+                detail.setText(optional
+                        ? "按需目标未启动，不影响下载核心"
+                        : "目标进程当前没有出现在 runningTargets");
                 return;
             }
 
             boolean stale = "STALE".equals(s.targetState)
                     || (s.loadedVersion > 0 && s.loadedVersion != BuildConfig.VERSION_CODE);
 
-            if (stale) {
+            if ("FAILED".equals(s.targetState)) {
+                state.setText("注入失败");
+                state.setTextColor(RED);
+            } else if (stale) {
                 state.setText("已加载旧版本 · 待热重载");
+                state.setTextColor(AMBER);
+            } else if ("RELOADING".equals(s.targetState)) {
+                state.setText("正在热重载");
                 state.setTextColor(AMBER);
             } else if (s.currentGeneration) {
                 state.setText("已加载");
                 state.setTextColor(GREEN);
             } else {
-                state.setText("进程已注入 · 等待当前 generation 回执");
+                state.setText("已注入 · 状态待确认");
                 state.setTextColor(AMBER);
             }
 
             StringBuilder info = new StringBuilder();
             info.append("进程：").append(s.process.isBlank() ? "未知" : s.process)
                     .append(" · PID ").append(s.pid)
-                    .append("\n框架状态：").append(s.targetState.isBlank() ? "UNKNOWN" : s.targetState)
-                    .append(" · 加载版本 ").append(s.loadedVersion)
-                    .append("\n运行时回执版本：").append(s.reportedVersion)
-                    .append(" · 证据数 ").append(s.evidenceCount);
-
-            if (s.loadedAt > 0L) {
-                info.append("\n本 generation：").append(formatTime(s.loadedAt));
-            }
-            if (s.lastReload > 0L) {
-                info.append(" · 最近热重载 ").append(formatTime(s.lastReload));
-            }
+                    .append("\nUID：").append(s.uid)
+                    .append(" · 框架状态：")
+                    .append(s.targetState.isBlank() ? "UNKNOWN" : s.targetState)
+                    .append("\n加载版本：").append(s.loadedVersion)
+                    .append(" · 当前版本：").append(BuildConfig.VERSION_CODE);
             detail.setText(info.toString());
         }
-    }
-
-    private String formatTime(long time) {
-        return DateFormat.getDateTimeInstance(
-                DateFormat.SHORT, DateFormat.MEDIUM, Locale.getDefault())
-                .format(new Date(time));
     }
 
     private LinearLayout cardContainer() {
@@ -458,7 +448,9 @@ public final class MainActivity extends Activity {
         tv.setTextSize(sp);
         tv.setTextColor(color);
         tv.setGravity(Gravity.START);
-        if (bold) tv.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        if (bold) {
+            tv.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        }
         return tv;
     }
 
@@ -523,57 +515,48 @@ public final class MainActivity extends Activity {
     private static final class ScopeStatus {
         final String packageName;
         final boolean inScope;
+        final int uid;
         final String process;
         final boolean running;
         final String targetState;
         final int pid;
         final long loadedVersion;
-        final long reportedVersion;
-        final long loadedAt;
-        final long lastReload;
-        final int evidenceCount;
         final boolean currentGeneration;
         final boolean error;
 
         ScopeStatus(
                 String packageName,
                 boolean inScope,
+                int uid,
                 String process,
                 boolean running,
                 String targetState,
                 int pid,
                 long loadedVersion,
-                long reportedVersion,
-                long loadedAt,
-                long lastReload,
-                int evidenceCount,
                 boolean currentGeneration,
                 boolean error) {
             this.packageName = packageName;
             this.inScope = inScope;
+            this.uid = uid;
             this.process = process == null ? "" : process;
             this.running = running;
             this.targetState = targetState == null ? "" : targetState;
             this.pid = pid;
             this.loadedVersion = loadedVersion;
-            this.reportedVersion = reportedVersion;
-            this.loadedAt = loadedAt;
-            this.lastReload = lastReload;
-            this.evidenceCount = evidenceCount;
             this.currentGeneration = currentGeneration;
             this.error = error;
         }
 
         static ScopeStatus disconnected(String packageName) {
             return new ScopeStatus(
-                    packageName, false, "", false, "", 0,
-                    0L, 0L, 0L, 0L, 0, false, false);
+                    packageName, false, -1, "", false, "",
+                    0, 0L, false, false);
         }
 
         static ScopeStatus error(String packageName) {
             return new ScopeStatus(
-                    packageName, false, "", false, "", 0,
-                    0L, 0L, 0L, 0L, 0, false, true);
+                    packageName, false, -1, "", false, "",
+                    0, 0L, false, true);
         }
     }
 }
