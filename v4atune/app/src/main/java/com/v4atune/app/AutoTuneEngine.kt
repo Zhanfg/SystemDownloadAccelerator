@@ -50,7 +50,7 @@ class AutoTuneEngine(private val context: Context) {
             val first = calibrator.measure(options.mode, false) {
                 progress(it, 0.14f)
             }
-            val beforeMetrics = TuningPlanner.metrics(first, options.target)
+            val beforeMetrics = TuningPlanner.metrics(first, options)
 
             progress("计算 31 段 IIR / FIR / 动态参数", 0.48f)
             var plan = TuningPlanner.build(first, options)
@@ -80,7 +80,7 @@ class AutoTuneEngine(private val context: Context) {
             } else {
                 verify
             }
-            val afterMetrics = TuningPlanner.metrics(finalVerify, options.target)
+            val afterMetrics = TuningPlanner.metrics(finalVerify, options)
 
             progress("保存配置与测试报告", 0.96f)
             saveArtifacts(out, plan, beforeMetrics, afterMetrics, driverBefore, driverAfter)
