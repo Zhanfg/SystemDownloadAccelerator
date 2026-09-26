@@ -1,117 +1,130 @@
 # Architecture
 
-## Scope
+## Design goal
 
-The module is split into three Android surfaces:
+Accelerate Android DownloadManager without replacing the system download lifecycle.
 
-- `com.android.providers.downloads` — transfer engine and source of truth
-- `com.android.providers.downloads.ui` — download list/detail/control surface
-- `com.android.systemui` — optional notification/status presentation
+The previous prototype tried to intercept private `DownloadThread.transferData`
+methods. That approach is intentionally retired: OEM forks, ART inlining and
+HttpEngine changes make those private call sites too fragile.
 
-Android 16 (API 36) and Android 17 (API 37.0) are the first targets.
+## Layer 1 — System adapter
 
-`android` / `system_server` is deliberately **not** in the LSPosed scope. Network,
-power, metered-state and thermal information should first be consumed through public
-framework APIs from the Provider process. A system_server hook is only justified if
-device testing proves a framework policy cannot otherwise be observed or controlled.
+The LSPosed module keeps a narrow system-facing surface:
 
-## Ownership rule
+1. `DownloadThread.run()` establishes the current Provider execution context.
+2. Android `Network.openConnection()`, `URL.openConnection()`, and detected
+   HttpEngine connection factories are observed.
+3. For a created `HttpURLConnection`, request headers are recorded.
+4. The concrete connection's `getInputStream()` is the body interception point.
 
-```text
-DownloadProvider = source of truth
-Downloads UI     = view + user controls
-SystemUI         = presentation only
-```
+No private transfer helper is required for acceleration.
 
-UI processes must not maintain an independent authoritative copy of download state.
+Worker-created Range requests are marked internal with a ThreadLocal bypass, so
+they never recursively enter the accelerator.
 
-## Current hook policy
+## Layer 2 — Independent Range core
 
-### DownloadProvider
+The core follows a job/part model inspired by AB Download Manager.
 
-The Provider layer currently hooks/probes `DownloadThread`:
+### RangePart
 
-- `run`
-- `executeDownload`
-- `transferData`
-- `addRequestHeaders`
+Each part has immutable inclusive `from..to` bounds.
 
-It remains observation-only. All hooks use protective exception mode and call through to
-the original implementation.
+Unlike the first prototype, the live HTTP boundary of an active part is never
+mutated. This avoids races between an in-flight HTTP response and a scheduler
+changing its end offset.
 
-### Downloads UI
+### MicroPartPlanner
 
-The UI layer currently performs class-capability discovery only. No private UI method is
-intercepted yet. This gives us a safe OxygenOS/AOSP compatibility signal before we add
-download detail controls.
+There are more parts than workers (normally four parts per worker, capped at 64).
+When a worker finishes, it claims another micro-part.
 
-### SystemUI
+This provides dynamic load balancing similar to runtime part splitting while
+keeping each request immutable and easy to validate.
 
-SystemUI is also capability-probe-only. We verify that the module is injected and inspect
-whether known notification-pipeline classes exist. No notification pipeline method is
-intercepted yet.
+### Range validation
 
-This is intentional: a broken Provider hook can break downloading; a broken SystemUI hook
-can destabilize the whole visible system shell.
+For a new 200 response, the core makes a small `bytes=0-255` request. A valid
+206 response must have a parseable Content-Range with the same total entity size.
 
-## Planned transfer pipeline
+For a resumed native 206 response, its Content-Range already proves that the
+server accepted a Range request.
 
-```text
-DownloadManager.enqueue()
-        |
-DownloadProvider / DownloadThread
-        |
- capability probe
-        |
-        +-- unsafe / unsupported --> original DownloadThread
-        |
-        +-- safe --> adaptive scheduler
-                       |
-                       +-- 1/2/4/6/8 segment workers
-                       +-- positional writes
-                       +-- aggregated progress
-                       +-- native cancellation/resume
-                       +-- native completion semantics
-                                |
-                                +--> Downloads UI
-                                +--> SystemUI notification surface
-```
+Strong ETag is preferred; Last-Modified is accepted as a fallback validator.
+All worker requests use `If-Range`.
 
-## Adaptive worker ceiling
+### Bounded reorder window
 
-The first scheduler policy is conservative:
+Workers prefetch parts into per-part temporary files under the DownloadProvider
+cache directory.
 
-- < 8 MiB: 1 worker
-- 8–32 MiB: up to 2 workers
-- 32–256 MiB: up to 4 workers
-- large unmetered Wi-Fi/Ethernet: up to 8 workers
-- large unmetered cellular: up to 6 workers
-- VPN: up to 4 workers
-- metered / power-save / high thermal state: up to 2 workers
+The scheduler limits how many parts may be ahead of the part currently consumed.
+This prevents the accelerator from duplicating an entire large download in cache.
 
-This is a ceiling, not a target. Runtime throughput sampling should reduce concurrency when
-one connection already saturates the path.
+The accelerated InputStream reads those temporary parts in byte order and deletes
+each part immediately after consumption.
 
-## Range eligibility
+## Layer 3 — Native state bridge
 
-Parallel transfer is only eligible when all required checks pass:
+This is the most important compatibility property.
 
-- known content length
-- valid byte-range behavior
-- stable validator such as ETag
-- no incompatible content encoding
-- seekable destination
-- file large enough for segmentation to be useful
+The range core does **not** write the user's final destination directly.
 
-Anything uncertain falls back to Android's original implementation.
+Android's original DownloadThread consumes the accelerated InputStream and remains
+responsible for:
 
-## Cross-process state
+- final destination writes;
+- fsync;
+- `currentBytes` and resumable contiguous progress;
+- DownloadProvider database updates;
+- pause/cancel/shutdown checks;
+- retry policy;
+- notification progress;
+- final success/error status;
+- permission/finalization behavior.
 
-A versioned bridge contract is reserved now, but no IPC implementation is enabled yet.
-When added, Provider will publish immutable telemetry snapshots; UI layers will consume
-those snapshots and send explicit control commands back. Provider remains authoritative.
+If the range core fails while being consumed, its InputStream throws an IOException
+and Android handles it through the normal retry/error path.
 
-## Root add-on
+## Network inheritance
 
-Kernel/TCP tuning remains optional and separate from the LSPosed APK. It must never become
-a requirement for correct DownloadManager behavior.
+Worker connections reuse:
+
+- the originating Android `Network`;
+- caller request headers recorded before connection;
+- final redirected URL;
+- native connect/read timeouts;
+- HTTPS socket factory from the original connection.
+
+The accelerator overrides only headers it owns: Range, If-Range and
+Accept-Encoding.
+
+## Concurrency
+
+Worker count remains adaptive. Metered networks, power-save mode and thermal state
+cap concurrency.
+
+Micro-parts are separate from workers: two workers may process eight parts over
+the lifetime of one transfer.
+
+## Process death
+
+No custom part database is required for correctness.
+
+The system writer only advances DownloadProvider progress for bytes it has consumed
+sequentially. If DownloadProvider dies, Android's own persisted contiguous offset is
+still valid. On resume, a new range session is created starting from that native
+offset.
+
+## Future optimizations
+
+Once the stream adapter is proven on-device:
+
+- per-host concurrency budgets;
+- 429/503 Retry-After backoff;
+- adaptive part sizing from measured throughput;
+- cache-window sizing from storage pressure;
+- HTTP/2/HTTP/3-aware connection strategy;
+- optional direct-offset destination writer only where Android exposes a stable
+  transaction boundary.
