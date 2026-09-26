@@ -18,17 +18,31 @@ import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
 /**
  * Modern libxposed entry point.
  *
- * Phase 1 is observation-only: verify DownloadProvider hook points and collect
- * sanitized metadata while leaving the original network/file behavior untouched.
+ * Provider owns transfer state. Downloads UI and SystemUI are read/control surfaces
+ * only; they must never become independent sources of download truth.
  */
 public final class AcceleratorModule extends XposedModule {
     private static final String TAG = "SysDlAccel";
-    private static final String TARGET_PACKAGE = "com.android.providers.downloads";
-    private static final Set<String> PROBE_METHODS = new HashSet<>(Arrays.asList(
+
+    private static final Set<String> PROVIDER_METHODS = new HashSet<>(Arrays.asList(
             "run", "executeDownload", "transferData", "addRequestHeaders"
     ));
 
-    private final AtomicBoolean installed = new AtomicBoolean(false);
+    private static final String[] DOWNLOADS_UI_CLASSES = {
+            "com.android.providers.downloads.ui.DownloadList",
+            "com.android.providers.downloads.ui.DownloadItem",
+            "com.android.providers.downloads.ui.DownloadActivity"
+    };
+
+    private static final String[] SYSTEM_UI_CLASSES = {
+            "com.android.systemui.SystemUIApplication",
+            "com.android.systemui.statusbar.notification.collection.NotifPipeline",
+            "com.android.systemui.statusbar.notification.collection.NotificationEntry"
+    };
+
+    private final AtomicBoolean providerInstalled = new AtomicBoolean(false);
+    private final AtomicBoolean downloadsUiSeen = new AtomicBoolean(false);
+    private final AtomicBoolean systemUiSeen = new AtomicBoolean(false);
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
@@ -38,40 +52,60 @@ public final class AcceleratorModule extends XposedModule {
 
     @Override
     public void onPackageReady(PackageReadyParam param) {
-        if (!param.isFirstPackage() || !TARGET_PACKAGE.equals(param.getPackageName())) {
+        if (!param.isFirstPackage()) {
             return;
         }
+
+        Scope scope = Scope.fromPackage(param.getPackageName());
+        if (scope == null) {
+            return;
+        }
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
-            log(Log.INFO, TAG, "SDK < 36: probe disabled, DownloadProvider left untouched");
+            log(Log.INFO, TAG, "SDK < 36: target left untouched: " + scope.packageName);
             return;
         }
-        if (!installed.compareAndSet(false, true)) {
-            return;
+
+        switch (scope) {
+            case PROVIDER:
+                installProviderHooks(param.getClassLoader());
+                break;
+            case DOWNLOADS_UI:
+                probeDownloadsUi(param.getClassLoader());
+                break;
+            case SYSTEM_UI:
+                probeSystemUi(param.getClassLoader());
+                break;
         }
-        installDownloadThreadHooks(param.getClassLoader());
     }
 
-    private void installDownloadThreadHooks(ClassLoader classLoader) {
+    private void installProviderHooks(ClassLoader classLoader) {
+        if (!providerInstalled.compareAndSet(false, true)) {
+            return;
+        }
+
         try {
             Class<?> downloadThread =
                     classLoader.loadClass("com.android.providers.downloads.DownloadThread");
+
             int count = 0;
             for (Method method : downloadThread.getDeclaredMethods()) {
-                if (!PROBE_METHODS.contains(method.getName())) {
+                if (!PROVIDER_METHODS.contains(method.getName())) {
                     continue;
                 }
                 method.setAccessible(true);
-                installProbeHook(method);
+                installProviderProbe(method);
                 count++;
             }
-            log(Log.INFO, TAG, "DownloadThread probe ready; hooks=" + count);
+
+            log(Log.INFO, TAG, "provider ready; DownloadThread hooks=" + count);
         } catch (Throwable t) {
-            installed.set(false);
-            log(Log.ERROR, TAG, "Unable to install DownloadThread probe", t);
+            providerInstalled.set(false);
+            log(Log.ERROR, TAG, "provider probe unavailable; native path preserved", t);
         }
     }
 
-    private void installProbeHook(Method method) {
+    private void installProviderProbe(Method method) {
         hook(method)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
@@ -95,5 +129,25 @@ public final class AcceleratorModule extends XposedModule {
                         }
                     }
                 });
+    }
+
+    private void probeDownloadsUi(ClassLoader classLoader) {
+        if (!downloadsUiSeen.compareAndSet(false, true)) {
+            return;
+        }
+
+        int available = Probe.countAvailable(classLoader, DOWNLOADS_UI_CLASSES);
+        log(Log.INFO, TAG, "downloads-ui ready; known classes="
+                + available + "/" + DOWNLOADS_UI_CLASSES.length);
+    }
+
+    private void probeSystemUi(ClassLoader classLoader) {
+        if (!systemUiSeen.compareAndSet(false, true)) {
+            return;
+        }
+
+        int available = Probe.countAvailable(classLoader, SYSTEM_UI_CLASSES);
+        log(Log.INFO, TAG, "systemui ready; known classes="
+                + available + "/" + SYSTEM_UI_CLASSES.length);
     }
 }

@@ -1,24 +1,36 @@
 # SystemDownloadAccelerator
 
-LSPosed module for accelerating Android's system DownloadManager without replacing the external DownloadManager API.
+LSPosed module for accelerating Android's system DownloadManager while preserving the
+system download lifecycle, UI compatibility and fallback behavior.
 
 ## Current phase
 
-The first implementation is intentionally **probe-only**:
+The foundation now covers three process surfaces:
+
+- `com.android.providers.downloads`
+- `com.android.providers.downloads.ui`
+- `com.android.systemui`
+
+Only **DownloadProvider** currently installs method hooks. Downloads UI and SystemUI use
+capability probes only, so OEM UI differences cannot alter or crash the download path.
+
+Current features:
 
 - Modern libxposed API 102
-- static scope: `com.android.providers.downloads`
-- Android 16 / 17 first
-- discovers AOSP `DownloadThread` hook points at runtime
-- records only sanitized transfer metadata
-- preserves the original network and file path completely
-- includes the range-policy and segment-planning core for the next phase
-
-This gives us a safe device-validation baseline before enabling parallel byte-range transfer.
+- Android 16 / Android 17.0 first
+- fail-closed DownloadThread probing
+- sanitized transfer logging
+- Range eligibility policy
+- gap-free segment planner
+- adaptive 1/2/4/6/8 worker ceiling
+- reserved versioned Provider-to-UI bridge contract
+- no system_server scope
+- no root requirement
 
 ## Build
 
-CI uses AGP 9.4.0, Gradle 9.6.0, JDK 17 and Android API 37.
+CI uses AGP 9.4.0, Gradle 9.6.0, JDK 17 and Android 17.0 SDK
+(`compileSdk = 37`, `compileSdkMinor = 0`).
 
 ```bash
 gradle :app:testDebugUnitTest :app:assembleDebug
@@ -28,17 +40,19 @@ The GitHub Actions artifact is named `SystemDownloadAccelerator-debug`.
 
 ## Device validation
 
-After enabling the module for **Download Manager / Downloads** in LSPosed and restarting the target process/device, check logcat for:
+Enable the module for **Download Manager / Downloads / System UI** in LSPosed, then reboot
+or restart the affected processes. Filter logcat by:
 
 ```text
 SysDlAccel
 ```
 
-Expected baseline:
+Expected baseline includes:
 
 ```text
-module loaded
-DownloadThread probe ready
+provider ready
+downloads-ui ready
+systemui ready
 download start {uri=https://example.com/…, ...}
 ```
 
@@ -46,10 +60,11 @@ Full URLs, query parameters, fragments and credentials are deliberately not logg
 
 ## Next
 
-1. Validate AOSP/OxygenOS Android 16 hook signatures.
-2. Add HTTP capability probing.
-3. Add guarded 2/4/6/8-way Range scheduling.
-4. Preserve DownloadManager progress, resume, cancellation and completion semantics.
-5. Add optional root-side network tuning separately.
+1. Validate all three scopes on OxygenOS / Android 16.
+2. Add real HTTP `Range: bytes=0-0` capability probing.
+3. Bind framework network/power/thermal state into the adaptive policy.
+4. Add guarded segmented transfer and positional writes.
+5. Publish Provider telemetry to Downloads UI / SystemUI through the bridge.
+6. Preserve native progress, pause/resume, cancellation, retry and completion semantics.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
