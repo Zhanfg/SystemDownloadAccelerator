@@ -1,5 +1,6 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
@@ -19,14 +20,13 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam;
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
 
 /**
- * Modern libxposed entry point with API-102 hot reload support.
- *
- * Provider owns transfer state. Downloads UI and SystemUI are read/control surfaces
- * only; they must never become independent sources of download truth.
+ * Modern libxposed entry point with API-102 hot reload support and
+ * runtime-state publication for the module app diagnostics screen.
  */
 public final class AcceleratorModule extends XposedModule {
     private static final String TAG = "SysDlAccel";
     private static final String HOOK_PREFIX = "sysdl:";
+    private static final String RUNTIME_PREFS = "runtime";
 
     private static final Set<String> PROVIDER_METHODS = new HashSet<>(Arrays.asList(
             "run", "executeDownload", "transferData", "addRequestHeaders"
@@ -49,16 +49,25 @@ public final class AcceleratorModule extends XposedModule {
     private final AtomicBoolean systemUiSeen = new AtomicBoolean(false);
     private final Set<String> hookedIds = new HashSet<>();
 
+    private int providerHookCount;
+    private int downloadsUiClassCount;
+    private int systemUiClassCount;
+    private String processName = "";
+
     /**
-     * Boot/framework-owned Pair is intentionally used as the saved state carrier.
-     * A module-owned state class would belong to the old module ClassLoader and is
-     * therefore unsafe to cast after a hot reload generation switch.
+     * The saved hot-reload state uses only framework-owned Pair/String/ClassLoader
+     * objects so the new module ClassLoader can safely read the old generation state.
+     *
+     * first.first  = package name
+     * first.second = process name
+     * second       = target ClassLoader
      */
-    private Pair<String, ClassLoader> reloadState;
+    private Pair<Pair<String, String>, ClassLoader> reloadState;
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
-        log(Log.INFO, TAG, "module loaded: process=" + param.getProcessName()
+        processName = param.getProcessName();
+        log(Log.INFO, TAG, "module loaded: process=" + processName
                 + ", sdk=" + Build.VERSION.SDK_INT
                 + ", api=" + getApiVersion());
     }
@@ -80,7 +89,9 @@ public final class AcceleratorModule extends XposedModule {
         }
 
         ClassLoader classLoader = param.getClassLoader();
-        reloadState = Pair.create(scope.packageName, classLoader);
+        reloadState = Pair.create(
+                Pair.create(scope.packageName, processName),
+                classLoader);
         installForScope(scope, classLoader, false);
     }
 
@@ -92,16 +103,18 @@ public final class AcceleratorModule extends XposedModule {
         }
 
         param.setSavedInstanceState(reloadState);
-        log(Log.INFO, TAG, "hot reload preparing: " + reloadState.first);
+        log(Log.INFO, TAG, "hot reload preparing: " + reloadState.first.first);
         return true;
     }
 
     @Override
     public void onHotReloaded(HotReloadedParam param) {
         Object saved = param.getSavedInstanceState();
-        if (!(saved instanceof Pair<?, ?> pair)
-                || !(pair.first instanceof String packageName)
-                || !(pair.second instanceof ClassLoader classLoader)) {
+        if (!(saved instanceof Pair<?, ?> outer)
+                || !(outer.first instanceof Pair<?, ?> meta)
+                || !(meta.first instanceof String packageName)
+                || !(meta.second instanceof String savedProcessName)
+                || !(outer.second instanceof ClassLoader classLoader)) {
             log(Log.ERROR, TAG, "hot reload failed: missing target context");
             unhookUnknownOldHandles(param);
             return;
@@ -114,7 +127,10 @@ public final class AcceleratorModule extends XposedModule {
             return;
         }
 
-        reloadState = Pair.create(packageName, classLoader);
+        processName = savedProcessName;
+        reloadState = Pair.create(
+                Pair.create(packageName, savedProcessName),
+                classLoader);
 
         try {
             installForScope(scope, classLoader, true);
@@ -127,26 +143,32 @@ public final class AcceleratorModule extends XposedModule {
     }
 
     private void installForScope(Scope scope, ClassLoader classLoader, boolean hotReload) {
+        int evidenceCount;
         switch (scope) {
             case PROVIDER:
-                installProviderHooks(classLoader);
+                evidenceCount = installProviderHooks(classLoader);
                 break;
             case DOWNLOADS_UI:
-                probeDownloadsUi(classLoader);
+                evidenceCount = probeDownloadsUi(classLoader);
                 break;
             case SYSTEM_UI:
-                probeSystemUi(classLoader);
+                evidenceCount = probeSystemUi(classLoader);
+                break;
+            default:
+                evidenceCount = 0;
                 break;
         }
+
+        publishRuntime(scope, evidenceCount, hotReload);
 
         if (hotReload) {
             log(Log.DEBUG, TAG, "scope refreshed from new generation: " + scope.packageName);
         }
     }
 
-    private void installProviderHooks(ClassLoader classLoader) {
+    private int installProviderHooks(ClassLoader classLoader) {
         if (!providerInstalled.compareAndSet(false, true)) {
-            return;
+            return providerHookCount;
         }
 
         try {
@@ -163,10 +185,14 @@ public final class AcceleratorModule extends XposedModule {
                 count++;
             }
 
+            providerHookCount = count;
             log(Log.INFO, TAG, "provider ready; DownloadThread hooks=" + count);
+            return count;
         } catch (Throwable t) {
             providerInstalled.set(false);
+            providerHookCount = 0;
             log(Log.ERROR, TAG, "provider probe unavailable; native path preserved", t);
+            return 0;
         }
     }
 
@@ -213,23 +239,50 @@ public final class AcceleratorModule extends XposedModule {
         });
     }
 
-    private void probeDownloadsUi(ClassLoader classLoader) {
+    private int probeDownloadsUi(ClassLoader classLoader) {
         if (!downloadsUiSeen.compareAndSet(false, true)) {
-            return;
+            return downloadsUiClassCount;
         }
 
-        int available = Probe.countAvailable(classLoader, DOWNLOADS_UI_CLASSES);
+        downloadsUiClassCount =
+                Probe.countAvailable(classLoader, DOWNLOADS_UI_CLASSES);
         log(Log.INFO, TAG, "downloads-ui ready; known classes="
-                + available + "/" + DOWNLOADS_UI_CLASSES.length);
+                + downloadsUiClassCount + "/" + DOWNLOADS_UI_CLASSES.length);
+        return downloadsUiClassCount;
     }
 
-    private void probeSystemUi(ClassLoader classLoader) {
+    private int probeSystemUi(ClassLoader classLoader) {
         if (!systemUiSeen.compareAndSet(false, true)) {
-            return;
+            return systemUiClassCount;
         }
 
-        int available = Probe.countAvailable(classLoader, SYSTEM_UI_CLASSES);
+        systemUiClassCount =
+                Probe.countAvailable(classLoader, SYSTEM_UI_CLASSES);
         log(Log.INFO, TAG, "systemui ready; known classes="
-                + available + "/" + SYSTEM_UI_CLASSES.length);
+                + systemUiClassCount + "/" + SYSTEM_UI_CLASSES.length);
+        return systemUiClassCount;
+    }
+
+    private void publishRuntime(Scope scope, int evidenceCount, boolean hotReload) {
+        try {
+            SharedPreferences prefs = getRemotePreferences(RUNTIME_PREFS);
+            String prefix = "scope." + scope.packageName + ".";
+            long now = System.currentTimeMillis();
+
+            SharedPreferences.Editor editor = prefs.edit()
+                    .putString(prefix + "process", processName == null ? "" : processName)
+                    .putLong(prefix + "version", BuildConfig.VERSION_CODE)
+                    .putLong(prefix + "loadedAt", now)
+                    .putInt(prefix + "evidenceCount", evidenceCount)
+                    .putBoolean(prefix + "hotReload", hotReload);
+
+            if (hotReload) {
+                editor.putLong(prefix + "lastReload", now);
+            }
+
+            editor.apply();
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "runtime status publish failed: " + scope.packageName, t);
+        }
     }
 }
