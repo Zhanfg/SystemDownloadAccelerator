@@ -407,13 +407,33 @@ object TuningPlanner {
         m.dense.count { it.frequency in 80.0..16000.0 && it.snrDb >= 12.0 } >=
             (m.dense.count { it.frequency in 80.0..16000.0 } * 0.7).toInt()
 
-    private fun deficit(m: Measurement, ref: Double, lo: Double, hi: Double, target: Target): Double {
-        val vals = m.dense.filter { it.frequency in lo..hi && it.snrDb >= 12.0 }
-            .map { it.levelDb - targetOffset(target, it.frequency) }
+    private fun deficit(
+        m: Measurement,
+        ref: Double,
+        lo: Double,
+        hi: Double,
+        options: TuneOptions,
+    ): Double {
+        val vals = m.dense
+            .filter { it.frequency in lo..hi && it.snrDb >= 12.0 }
+            .map { it.levelDb - sceneTargetOffset(options, it.frequency) }
         return if (vals.isEmpty()) 0.0 else max(0.0, ref - Acoustics.median(vals))
     }
 
-    private fun targetOffset(target: Target, f: Double): Double = when (target) {
+    private fun sceneTargetOffset(options: TuneOptions, frequency: Double): Double {
+        val spec = SceneDspProfiles.forScene(options.effectiveScene)
+        val base = interpolate(Acoustics.eq31, spec.eqTarget31Db, frequency)
+
+        if (options.scene != Scene.Custom || options.target == spec.target) return base
+
+        // Custom mode is an overlay: retain the originating scene curve and add
+        // only the delta introduced by the manually selected generic target.
+        return base +
+            genericTargetOffset(options.target, frequency) -
+            genericTargetOffset(spec.target, frequency)
+    }
+
+    private fun genericTargetOffset(target: Target, f: Double): Double = when (target) {
         Target.Reference -> 0.0
         Target.Balanced -> when {
             f <= 250 -> 0.8
@@ -437,21 +457,30 @@ object TuningPlanner {
 
     private data class Peak(val f: Double, val gain: Double, val q: Double)
 
-    private fun peakCandidates(m: Measurement, target: Target): List<Peak> {
+    private fun peakCandidates(m: Measurement, options: TuneOptions): List<Peak> {
         val ref = reference(m)
+        val strategy = SceneDspProfiles.forScene(options.effectiveScene).dynamicEq
         val candidates = mutableListOf<Peak>()
         val a = m.dense
+
         for (i in 2 until a.size - 2) {
             val p = a[i]
             if (p.frequency !in 100.0..14000.0 || p.snrDb < 12.0) continue
-            val rel = p.levelDb - ref - targetOffset(target, p.frequency)
-            val local = (a[i - 2].levelDb + a[i - 1].levelDb + a[i + 1].levelDb + a[i + 2].levelDb) / 4.0 - ref
-            val prominence = rel - local
-            if (rel > 2.2 && prominence > 0.7) {
-                val q = (1.0 + prominence / 2.0).coerceIn(0.8, 4.0)
-                candidates += Peak(p.frequency, -min(4.5, rel - 0.8), q)
+
+            val excess = p.levelDb - ref - sceneTargetOffset(options, p.frequency)
+            val neighbors = listOf(i - 2, i - 1, i + 1, i + 2)
+            val localExcess = neighbors
+                .map { n -> a[n].levelDb - ref - sceneTargetOffset(options, a[n].frequency) }
+                .average()
+            val prominence = excess - localExcess
+
+            if (excess > strategy.minExcessDb && prominence > strategy.minProminenceDb) {
+                val q = (1.0 + prominence / 2.0).coerceIn(strategy.qMin, strategy.qMax)
+                val cut = min(strategy.maxCutDb, excess - strategy.minExcessDb * 0.35)
+                candidates += Peak(p.frequency, -cut, q)
             }
         }
+
         return candidates
             .sortedBy { it.gain }
             .fold(mutableListOf()) { acc, peak ->
@@ -460,12 +489,15 @@ object TuningPlanner {
             }
     }
 
-    private fun designDdc(m: Measurement, target: Target): Pair<FloatArray, FloatArray>? {
-        val peaks = peakCandidates(m, target).take(4)
+    private fun designDdc(m: Measurement, options: TuneOptions): Pair<FloatArray, FloatArray>? {
+        val strategy = SceneDspProfiles.forScene(options.effectiveScene).dynamicEq
+        val peaks = peakCandidates(m, options).take(min(4, strategy.maxBands))
         if (peaks.isEmpty()) return null
+
         fun at(rate: Double): FloatArray = peaks.flatMap { p ->
             rbjPeak(p.f, p.q, p.gain, rate).toList()
         }.toFloatArray()
+
         return at(44100.0) to at(48000.0)
     }
 
