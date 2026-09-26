@@ -448,6 +448,32 @@ final class ParallelRangeEngine {
                         NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
                 if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                     kind = Conditions.NetworkKind.VPN;
+
+                    /*
+                     * Some VPN implementations advertise the VPN network as
+                     * metered even when the only validated physical underlay
+                     * is unmetered Wi-Fi/Ethernet. For concurrency policy we
+                     * can safely use the physical cost hint while keeping the
+                     * transport classified as VPN (so the VPN worker ceiling
+                     * still applies).
+                     */
+                    if (metered
+                            && cm != null
+                            && (network == null
+                            || policyNetwork.equals(cm.getActiveNetwork()))) {
+                        NetworkCostAssessment cost =
+                                NetworkCostAssessment.assess(context);
+                        if (cost.activeVpn
+                                && cost.uniqueUnderlyingUnmetered) {
+                            metered = false;
+                            EngineTelemetry.emit(
+                                    context,
+                                    "VPN_UNDERLAY",
+                                    "systemMetered=true underlay="
+                                            + cost.underlyingKind
+                                            + " effectiveMetered=false");
+                        }
+                    }
                 } else if (caps.hasTransport(
                         NetworkCapabilities.TRANSPORT_WIFI)) {
                     kind = Conditions.NetworkKind.WIFI;

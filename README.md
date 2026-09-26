@@ -163,3 +163,19 @@ DownloadManager path.
 
 The localhost 16 MiB self-test remains the correctness test. It is intentionally
 too small to exercise 32/64-worker scaling.
+
+
+## VPN metering
+
+Android can report a VPN as metered even when its physical underlay is
+unmetered Wi-Fi/Ethernet. The benchmark now treats this conservatively:
+
+- if the active VPN is marked metered and exactly one validated non-VPN
+  physical network is visible and NOT_METERED, the benchmark may continue;
+- DownloadManager is explicitly allowed over the VPN's metered wrapper only in
+  that case;
+- if the underlay is ambiguous, the benchmark stays blocked unless the user
+  explicitly enables the VPN-metering override;
+- non-VPN metered networks remain blocked by default;
+- adaptive concurrency keeps the transport classified as VPN while using a
+  uniquely verified unmetered physical underlay as the cost hint.

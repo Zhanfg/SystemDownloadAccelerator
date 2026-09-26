@@ -3,7 +3,6 @@ package dev.axymorrsen.systemdownloadaccelerator;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.database.Cursor;
-import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Environment;
 
@@ -63,6 +62,7 @@ final class RealDownloadBenchmark {
     static Session run(
             Context context,
             String rawUrl,
+            boolean allowVpnMeteredOverride,
             Listener listener) {
         Context app = context.getApplicationContext();
         DownloadManager manager =
@@ -76,6 +76,7 @@ final class RealDownloadBenchmark {
                         app,
                         manager,
                         rawUrl,
+                        allowVpnMeteredOverride,
                         session,
                         listener),
                 "sysdl-real-benchmark")
@@ -87,6 +88,7 @@ final class RealDownloadBenchmark {
             Context context,
             DownloadManager manager,
             String rawUrl,
+            boolean allowVpnMeteredOverride,
             Session session,
             Listener listener) {
         if (manager == null) {
@@ -102,13 +104,57 @@ final class RealDownloadBenchmark {
 
         try {
             Uri uri = validateUrl(rawUrl);
-            if (isMetered(context)) {
-                listener.onUpdate(
-                        "当前网络被 Android 标记为计费网络；"
-                                + "大文件性能测试默认拒绝启动，避免消耗蜂窝流量。",
-                        true,
-                        false);
-                return;
+
+            NetworkCostAssessment cost =
+                    NetworkCostAssessment.assess(context);
+            boolean permitMeteredDownload = false;
+
+            if (cost.systemMetered) {
+                if (cost.activeVpn
+                        && cost.uniqueUnderlyingUnmetered) {
+                    permitMeteredDownload = true;
+                    EngineTelemetry.emit(
+                            context,
+                            "BENCH_METERING",
+                            "VPN wrapper marked metered; "
+                                    + "unique underlay="
+                                    + cost.underlyingKind
+                                    + " is unmetered, auto-allowing benchmark");
+                    listener.onUpdate(
+                            "VPN 被系统标记为计费网络，但检测到唯一底层 "
+                                    + cost.underlyingKind
+                                    + " 为非计费网络；已按底层网络继续测试。",
+                            false,
+                            false);
+                } else if (cost.activeVpn
+                        && allowVpnMeteredOverride) {
+                    permitMeteredDownload = true;
+                    EngineTelemetry.emit(
+                            context,
+                            "BENCH_METERING_OVERRIDE",
+                            "manual VPN metered override · "
+                                    + cost.detail);
+                    listener.onUpdate(
+                            "已启用 VPN 计费标记覆盖；请确认底层网络确实不限流量。",
+                            false,
+                            false);
+                } else {
+                    EngineTelemetry.emit(
+                            context,
+                            "BENCH_BLOCKED_METERED",
+                            cost.detail);
+                    listener.onUpdate(
+                            cost.activeVpn
+                                    ? "VPN 被 Android 标记为计费网络，"
+                                            + "且无法唯一确认底层网络为非计费。"
+                                            + "如你确认底层 Wi‑Fi/以太网不限流量，"
+                                            + "可勾选“忽略 VPN 计费标记”后重试。"
+                                    : "当前物理网络被 Android 标记为计费网络；"
+                                            + "大文件性能测试默认拒绝启动，避免消耗蜂窝流量。",
+                            true,
+                            false);
+                    return;
+                }
             }
 
             File dir = context.getExternalFilesDir(
@@ -134,7 +180,7 @@ final class RealDownloadBenchmark {
                                     "System Download Accelerator benchmark")
                             .setDescription(
                                     "Real-network adaptive concurrency test")
-                            .setAllowedOverMetered(false)
+                            .setAllowedOverMetered(permitMeteredDownload)
                             .setAllowedOverRoaming(false)
                             .setDestinationInExternalFilesDir(
                                     context,
@@ -316,17 +362,6 @@ final class RealDownloadBenchmark {
                     "URL 缺少有效主机名");
         }
         return uri;
-    }
-
-    private static boolean isMetered(Context context) {
-        try {
-            ConnectivityManager cm =
-                    context.getSystemService(
-                            ConnectivityManager.class);
-            return cm == null || cm.isActiveNetworkMetered();
-        } catch (Throwable ignored) {
-            return true;
-        }
     }
 
     private static String progressMessage(

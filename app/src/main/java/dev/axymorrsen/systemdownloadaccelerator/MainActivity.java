@@ -19,6 +19,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -63,6 +64,7 @@ public final class MainActivity extends Activity {
     private EditText benchmarkUrl;
     private TextView benchmarkStatus;
     private TextView benchmarkEngine;
+    private CheckBox benchmarkVpnMeteredOverride;
     private Button benchmarkButton;
     private RealDownloadBenchmark.Session benchmarkSession;
     private Button diagnosticButton;
@@ -350,6 +352,17 @@ public final class MainActivity extends Activity {
         benchmarkEngineLp.topMargin = dp(6);
         benchmarkBox.addView(benchmarkEngine, benchmarkEngineLp);
 
+        benchmarkVpnMeteredOverride = new CheckBox(this);
+        benchmarkVpnMeteredOverride.setText(
+                "忽略 VPN 的计费标记（仅在你确认底层网络不限流量时使用）");
+        benchmarkVpnMeteredOverride.setTextSize(13);
+        benchmarkVpnMeteredOverride.setTextColor(TEXT);
+        LinearLayout.LayoutParams vpnOverrideLp = wrap();
+        vpnOverrideLp.topMargin = dp(8);
+        benchmarkBox.addView(
+                benchmarkVpnMeteredOverride,
+                vpnOverrideLp);
+
         benchmarkButton = new Button(this);
         benchmarkButton.setText("开始大文件性能测试");
         benchmarkButton.setTextSize(15);
@@ -474,9 +487,14 @@ public final class MainActivity extends Activity {
                 "BENCH_UI_BEGIN",
                 "version=" + BuildConfig.VERSION_CODE);
 
+        boolean allowVpnMeteredOverride =
+                benchmarkVpnMeteredOverride != null
+                        && benchmarkVpnMeteredOverride.isChecked();
+
         benchmarkSession = RealDownloadBenchmark.run(
                 this,
                 url,
+                allowVpnMeteredOverride,
                 (message, terminal, success) ->
                         runOnUiThread(() -> {
                             benchmarkStatus.setText(message);
