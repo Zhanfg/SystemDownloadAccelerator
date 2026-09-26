@@ -6,6 +6,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.util.Pair;
 
+import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -55,8 +56,7 @@ public final class AcceleratorModule extends XposedModule {
     private String processName = "";
 
     /**
-     * The saved hot-reload state uses only framework-owned Pair/String/ClassLoader
-     * objects so the new module ClassLoader can safely read the old generation state.
+     * Cross-generation state uses only framework/boot owned classes.
      *
      * first.first  = package name
      * first.second = process name
@@ -88,6 +88,10 @@ public final class AcceleratorModule extends XposedModule {
             return;
         }
 
+        if (processName == null || processName.isBlank()) {
+            processName = scope.packageName;
+        }
+
         ClassLoader classLoader = param.getClassLoader();
         reloadState = Pair.create(
                 Pair.create(scope.packageName, processName),
@@ -97,49 +101,136 @@ public final class AcceleratorModule extends XposedModule {
 
     @Override
     public boolean onHotReloading(HotReloadingParam param) {
-        if (reloadState == null) {
-            log(Log.WARN, TAG, "hot reload rejected: target context not ready");
-            return false;
+        if (reloadState != null) {
+            param.setSavedInstanceState(reloadState);
+            log(Log.INFO, TAG, "hot reload preparing: " + reloadState.first.first);
+        } else {
+            /*
+             * Do not reject solely because this generation lacks saved context.
+             * API 102 gives the new generation processName and old HookHandles,
+             * which are enough to recover Provider hooks after an older schema.
+             */
+            log(Log.WARN, TAG, "hot reload preparing without saved target context");
         }
-
-        param.setSavedInstanceState(reloadState);
-        log(Log.INFO, TAG, "hot reload preparing: " + reloadState.first.first);
         return true;
     }
 
     @Override
     public void onHotReloaded(HotReloadedParam param) {
         Object saved = param.getSavedInstanceState();
-        if (!(saved instanceof Pair<?, ?> outer)
-                || !(outer.first instanceof Pair<?, ?> meta)
-                || !(meta.first instanceof String packageName)
-                || !(meta.second instanceof String savedProcessName)
-                || !(outer.second instanceof ClassLoader classLoader)) {
-            log(Log.ERROR, TAG, "hot reload failed: missing target context");
-            unhookUnknownOldHandles(param);
-            return;
+        String packageName = null;
+        String savedProcessName = param.getProcessName();
+        ClassLoader classLoader = null;
+
+        // Current schema: Pair<Pair<package, process>, ClassLoader>.
+        if (saved instanceof Pair<?, ?> outer
+                && outer.first instanceof Pair<?, ?> meta
+                && meta.first instanceof String savedPackage
+                && meta.second instanceof String oldProcess
+                && outer.second instanceof ClassLoader savedLoader) {
+            packageName = savedPackage;
+            savedProcessName = oldProcess;
+            classLoader = savedLoader;
+        // Previous schema: Pair<package, ClassLoader>.
+        } else if (saved instanceof Pair<?, ?> legacy
+                && legacy.first instanceof String savedPackage
+                && legacy.second instanceof ClassLoader savedLoader) {
+            packageName = savedPackage;
+            classLoader = savedLoader;
+            log(Log.INFO, TAG, "hot reload: migrated legacy saved-state schema");
         }
 
-        Scope scope = Scope.fromPackage(packageName);
+        if (classLoader == null) {
+            classLoader = recoverTargetClassLoader(param);
+        }
+
+        if (savedProcessName == null || savedProcessName.isBlank()) {
+            savedProcessName = param.getProcessName();
+        }
+        processName = savedProcessName == null ? "" : savedProcessName;
+
+        Scope scope = packageName == null ? null : Scope.fromPackage(packageName);
         if (scope == null) {
-            log(Log.ERROR, TAG, "hot reload failed: unsupported target " + packageName);
-            unhookUnknownOldHandles(param);
+            scope = inferScope(processName, classLoader);
+        }
+
+        if (scope == null || classLoader == null) {
+            log(Log.ERROR, TAG,
+                    "hot reload recovery failed; preserving old hooks: process=" + processName);
             return;
         }
 
-        processName = savedProcessName;
         reloadState = Pair.create(
-                Pair.create(packageName, savedProcessName),
+                Pair.create(scope.packageName, processName),
                 classLoader);
 
+        boolean installed = false;
         try {
             installForScope(scope, classLoader, true);
-            log(Log.INFO, TAG, "hot reload complete: " + packageName);
+            installed = true;
+            log(Log.INFO, TAG, "hot reload complete: " + scope.packageName
+                    + " process=" + processName);
         } catch (Throwable t) {
-            log(Log.ERROR, TAG, "hot reload install failed: " + packageName, t);
-        } finally {
+            log(Log.ERROR, TAG,
+                    "hot reload install failed; preserving old hooks: " + scope.packageName, t);
+        }
+
+        if (installed) {
             unhookUnknownOldHandles(param);
         }
+    }
+
+    private ClassLoader recoverTargetClassLoader(HotReloadedParam param) {
+        try {
+            for (XposedInterface.HookHandle handle : param.getOldHookHandles()) {
+                Member member = handle.getMember();
+                if (member != null && member.getDeclaringClass() != null) {
+                    ClassLoader loader = member.getDeclaringClass().getClassLoader();
+                    if (loader != null) {
+                        log(Log.INFO, TAG, "hot reload: recovered ClassLoader from old hook");
+                        return loader;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "old-hook ClassLoader recovery failed", t);
+        }
+
+        try {
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            if (loader != null) {
+                log(Log.INFO, TAG, "hot reload: using thread context ClassLoader");
+                return loader;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private Scope inferScope(String process, ClassLoader classLoader) {
+        Scope direct = Scope.fromPackage(process);
+        if (direct != null) {
+            return direct;
+        }
+        if (classLoader == null) {
+            return null;
+        }
+
+        try {
+            classLoader.loadClass("com.android.providers.downloads.DownloadThread");
+            return Scope.PROVIDER;
+        } catch (Throwable ignored) {
+        }
+
+        if (Probe.countAvailable(classLoader, DOWNLOADS_UI_CLASSES) > 0) {
+            return Scope.DOWNLOADS_UI;
+        }
+
+        if (Probe.countAvailable(classLoader, SYSTEM_UI_CLASSES) > 0) {
+            return Scope.SYSTEM_UI;
+        }
+
+        return null;
     }
 
     private void installForScope(Scope scope, ClassLoader classLoader, boolean hotReload) {
@@ -280,7 +371,17 @@ public final class AcceleratorModule extends XposedModule {
                 editor.putLong(prefix + "lastReload", now);
             }
 
-            editor.apply();
+            boolean committed = editor.commit();
+            if (committed) {
+                log(Log.INFO, TAG,
+                        "runtime status published: " + scope.packageName
+                                + " process=" + processName
+                                + " version=" + BuildConfig.VERSION_CODE
+                                + " evidence=" + evidenceCount);
+            } else {
+                log(Log.WARN, TAG,
+                        "runtime status commit returned false: " + scope.packageName);
+            }
         } catch (Throwable t) {
             log(Log.WARN, TAG, "runtime status publish failed: " + scope.packageName, t);
         }
