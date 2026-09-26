@@ -16,6 +16,7 @@ data class TuneResult(
     val driverBefore: DriverStatus,
     val driverAfter: DriverStatus,
     val outputDir: File,
+    val persistenceOk: Boolean,
 )
 
 class AutoTuneEngine(private val context: Context) {
@@ -68,7 +69,7 @@ class AutoTuneEngine(private val context: Context) {
             applyPlan(plan)
             delay(300)
 
-            val driverAfter = ViperControl.status() ?: error("调整后无法读取驱动状态")
+            var driverAfter = ViperControl.status() ?: error("调整后无法读取驱动状态")
             check(driverAfter.processedFrames >= driverBefore.processedFrames) {
                 "ViPER processedFrames 未前进"
             }
@@ -83,7 +84,15 @@ class AutoTuneEngine(private val context: Context) {
 
             progress("保存配置与测试报告", 0.96f)
             saveArtifacts(out, plan, beforeMetrics, afterMetrics, driverBefore, driverAfter)
-            runCatching { ViperPersistence(context).sync(plan) }
+            val persistenceOk = try {
+                ViperPersistence(context).sync(plan)
+                delay(250)
+                applyPlan(plan)
+                driverAfter = ViperControl.status() ?: driverAfter
+                true
+            } catch (_: Throwable) {
+                false
+            }
 
             progress("完成", 1.0f)
             TuneResult(
@@ -93,6 +102,7 @@ class AutoTuneEngine(private val context: Context) {
                 driverBefore = driverBefore,
                 driverAfter = driverAfter,
                 outputDir = out,
+                persistenceOk = persistenceOk,
             )
         } finally {
             runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0) }
