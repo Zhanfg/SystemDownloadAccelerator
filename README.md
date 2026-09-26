@@ -132,3 +132,17 @@ count.
 
 Workers consume immutable ~8 MiB micro-parts from a shared queue, so the number
 of work units is independent from the current worker count.
+
+
+## Hot reload generations
+
+API 102 hot reload performs an explicit generation handoff:
+
+1. recover the target ClassLoader from the old generation;
+2. unhook every old HookHandle;
+3. abort reload if any stale hook could not be removed;
+4. clear process-local generation state;
+5. install the new generation with versioned hook IDs.
+
+This prevents a target process from executing old and new interceptor logic at
+the same time after an in-place module update.

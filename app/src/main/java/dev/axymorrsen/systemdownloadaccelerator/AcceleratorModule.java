@@ -44,7 +44,8 @@ import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
  */
 public final class AcceleratorModule extends XposedModule {
     private static final String TAG = "SysDlAccel";
-    private static final String ID_PREFIX = "sysdl2:";
+    private static final String ID_PREFIX =
+            "sysdl2:v" + BuildConfig.VERSION_CODE + ":";
 
     private static final String[] DOWNLOADS_UI_CLASSES = {
             "com.android.providers.downloads.ui.DownloadList",
@@ -195,14 +196,54 @@ public final class AcceleratorModule extends XposedModule {
                 classLoader);
 
         try {
+            Context processContext = resolveProcessContext();
+            OldHookTeardown teardown =
+                    teardownOldGeneration(param);
+
+            EngineTelemetry.emit(
+                    processContext,
+                    "HOT_RELOAD_TEARDOWN",
+                    "old=" + teardown.total
+                            + " removed=" + teardown.removed
+                            + " failed=" + teardown.failed
+                            + " targetVersion="
+                            + BuildConfig.VERSION_CODE);
+
+            if (teardown.failed > 0) {
+                emit(Log.ERROR,
+                        "hot reload aborted: stale hooks remain scope="
+                                + scope.packageName
+                                + " failed="
+                                + teardown.failed);
+                EngineTelemetry.emit(
+                        processContext,
+                        "HOT_RELOAD_ABORT",
+                        "stale old hooks remain; refusing duplicate install");
+                return;
+            }
+
             resetGenerationState();
             installForScope(scope, classLoader, true);
-            unhookUnknownOldHandles(param);
             emit(Log.INFO,
-                    "hot reload complete scope=" + scope.packageName);
+                    "hot reload complete scope="
+                            + scope.packageName
+                            + " version="
+                            + BuildConfig.VERSION_CODE);
+            EngineTelemetry.emit(
+                    resolveProcessContext(),
+                    "HOT_RELOAD_READY",
+                    "scope=" + scope.packageName
+                            + " version="
+                            + BuildConfig.VERSION_CODE);
         } catch (Throwable t) {
             emit(Log.ERROR,
                     "hot reload failed scope=" + scope.packageName, t);
+            EngineTelemetry.emit(
+                    resolveProcessContext(),
+                    "HOT_RELOAD_ERROR",
+                    t.getClass().getSimpleName()
+                            + ": "
+                            + String.valueOf(t.getMessage()));
         }
     }
 
@@ -1052,19 +1093,48 @@ public final class AcceleratorModule extends XposedModule {
         return fallback;
     }
 
-    private void unhookUnknownOldHandles(
+    private static final class OldHookTeardown {
+        final int total;
+        final int removed;
+        final int failed;
+
+        OldHookTeardown(int total, int removed, int failed) {
+            this.total = total;
+            this.removed = removed;
+            this.failed = failed;
+        }
+    }
+
+    /**
+     * A hot-reloaded generation must never share live interceptors with the
+     * previous generation. Hook ids are metadata; they do not prove that the
+     * framework replaced the interceptor implementation behind an old handle.
+     */
+    private OldHookTeardown teardownOldGeneration(
             HotReloadedParam param) {
-        param.getOldHookHandles().forEach(handle -> {
-            String id = handle.getId();
-            if (id == null || !hookedIds.contains(id)) {
-                try {
-                    handle.unhook();
-                } catch (Throwable t) {
-                    emit(Log.WARN,
-                            "unable to remove stale hook", t);
-                }
+        int total = 0;
+        int removed = 0;
+        int failed = 0;
+
+        for (XposedInterface.HookHandle handle
+                : param.getOldHookHandles()) {
+            total++;
+            try {
+                handle.unhook();
+                removed++;
+            } catch (Throwable t) {
+                failed++;
+                emit(Log.ERROR,
+                        "unable to remove old generation hook id="
+                                + String.valueOf(handle.getId()),
+                        t);
             }
-        });
+        }
+
+        return new OldHookTeardown(
+                total,
+                removed,
+                failed);
     }
 
     private int probeDownloadsUi(ClassLoader classLoader) {
