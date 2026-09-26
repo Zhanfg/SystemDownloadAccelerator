@@ -19,7 +19,6 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
@@ -115,7 +114,7 @@ final class DiagnosticReport {
                 append(out, "api", service.getApiVersion());
                 append(out, "framework_properties", service.getFrameworkProperties());
 
-                Set<String> scope = service.getScope();
+                List<String> scope = service.getScope();
                 out.append("scope:\n");
                 if (scope == null || scope.isEmpty()) {
                     out.append("  (empty)\n");
