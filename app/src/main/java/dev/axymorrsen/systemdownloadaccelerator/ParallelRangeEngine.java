@@ -120,7 +120,8 @@ final class ParallelRangeEngine {
             EngineTelemetry.emit(
                     context,
                     "STREAM_INTERCEPT",
-                    "code=" + code
+                    "build=" + BuildConfig.BUILD_ID
+                            + " code=" + code
                             + " start=" + startOffset
                             + " total=" + totalLength
                             + " factory=" + metadata.factoryKind
@@ -165,7 +166,8 @@ final class ParallelRangeEngine {
             EngineTelemetry.emit(
                     context,
                     "PARTS",
-                    "initial=" + initialWorkers
+                    "build=" + BuildConfig.BUILD_ID
+                            + " initial=" + initialWorkers
                             + " max=" + maxWorkers
                             + " parts=" + parts.size()
                             + " network=" + conditions.networkKind

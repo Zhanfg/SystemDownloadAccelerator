@@ -232,8 +232,13 @@ public final class MainActivity extends Activity {
         root.addView(overallBox, overallLp);
 
         framework = text("框架：正在连接…", 15, TEXT, true);
-        version = text("模块版本：" + BuildConfig.VERSION_NAME
-                + " (" + BuildConfig.VERSION_CODE + ")", 13, MUTED, false);
+        version = text(
+                "模块版本：" + BuildConfig.VERSION_NAME
+                        + " (" + BuildConfig.VERSION_CODE + ")"
+                        + " · build " + BuildConfig.BUILD_ID,
+                13,
+                MUTED,
+                false);
 
         LinearLayout frameworkBox = cardContainer();
         frameworkBox.addView(framework);
@@ -455,6 +460,7 @@ public final class MainActivity extends Activity {
                 getApplicationContext(),
                 "SELFTEST_BEGIN",
                 "version=" + BuildConfig.VERSION_CODE
+                        + " build=" + BuildConfig.BUILD_ID
                         + " at=" + android.os.SystemClock.elapsedRealtime());
         engineDiag.setTextColor(MUTED);
 
@@ -522,7 +528,8 @@ public final class MainActivity extends Activity {
         EngineTelemetry.emit(
                 getApplicationContext(),
                 "BENCH_UI_BEGIN",
-                "version=" + BuildConfig.VERSION_CODE);
+                "version=" + BuildConfig.VERSION_CODE
+                        + " build=" + BuildConfig.BUILD_ID);
 
         boolean allowVpnMeteredOverride =
                 benchmarkVpnMeteredOverride != null
@@ -596,6 +603,38 @@ public final class MainActivity extends Activity {
                                 + BuildConfig.VERSION_CODE
                                 + " state="
                                 + report.provider.targetState);
+            } else if (report.provider.running) {
+                String receipt = latestProviderBuildReceipt();
+                if (!receiptMatchesCurrentBuild(receipt)) {
+                    try {
+                        Thread.sleep(250L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    receipt = latestProviderBuildReceipt();
+                }
+
+                if (!receiptMatchesCurrentBuild(receipt)) {
+                    failure =
+                            "DownloadProvider 的 versionCode 已是 "
+                                    + BuildConfig.VERSION_CODE
+                                    + "，但运行中的 Hook build 与当前 APK 不一致。"
+                                    + "当前 build="
+                                    + BuildConfig.BUILD_ID
+                                    + "，Provider 回执="
+                                    + (receipt == null ? "(none)" : receipt)
+                                    + "。请先完成热重载/Provider 进程重启再运行"
+                                    + action
+                                    + "。";
+                    EngineTelemetry.emit(
+                            getApplicationContext(),
+                            "PROVIDER_BUILD_STALE",
+                            "action=" + action
+                                    + " currentBuild="
+                                    + BuildConfig.BUILD_ID
+                                    + " receipt="
+                                    + String.valueOf(receipt));
+                }
             }
 
             final String result = failure;
@@ -607,6 +646,29 @@ public final class MainActivity extends Activity {
                 }
             });
         }, "sysdl-provider-preflight").start();
+    }
+
+    private String latestProviderBuildReceipt() {
+        java.util.List<String> events =
+                TelemetryProvider.readEvents(
+                        getApplicationContext());
+        for (int i = events.size() - 1; i >= 0; i--) {
+            String event = events.get(i);
+            if (event.startsWith("ADAPTER_INSTALL")) {
+                return event;
+            }
+        }
+        return null;
+    }
+
+    private boolean receiptMatchesCurrentBuild(String receipt) {
+        if (receipt == null) {
+            return false;
+        }
+        return receipt.contains(
+                        "version=" + BuildConfig.VERSION_CODE)
+                && receipt.contains(
+                        "build=" + BuildConfig.BUILD_ID);
     }
 
     private String latestAdaptiveEvent() {

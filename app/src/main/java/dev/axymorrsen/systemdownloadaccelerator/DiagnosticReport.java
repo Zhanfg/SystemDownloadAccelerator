@@ -79,6 +79,7 @@ final class DiagnosticReport {
         append(out, "generated_at", timestamp());
         append(out, "module_version", BuildConfig.VERSION_NAME);
         append(out, "module_version_code", BuildConfig.VERSION_CODE);
+        append(out, "build_id", BuildConfig.BUILD_ID);
 
         appendHeader(out, "Device");
         append(out, "manufacturer", Build.MANUFACTURER);

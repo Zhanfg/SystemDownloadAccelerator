@@ -201,3 +201,14 @@ Large-file performance tuning avoids artificial per-range connection churn:
   throughput justify it;
 - PIPELINE telemetry compares network ingress with native DownloadManager
   drain rate and reports queued reorder bytes.
+
+
+## Build identity
+
+Runtime identity is stricter than Android versionCode alone.
+
+- every CI build embeds the first 12 characters of GITHUB_SHA as BUILD_ID;
+- hook IDs contain versionCode, BUILD_ID and a per-generation runtime token;
+- DownloadProvider emits version/build/generation receipts during adapter install and hot reload;
+- self-test and benchmark preflight reject a running provider whose versionCode matches but BUILD_ID does not;
+- this prevents two different APK builds that accidentally reuse the same versionCode from sharing or confusing hot-reload hooks.

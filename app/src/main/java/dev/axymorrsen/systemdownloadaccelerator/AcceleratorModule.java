@@ -44,8 +44,18 @@ import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
  */
 public final class AcceleratorModule extends XposedModule {
     private static final String TAG = "SysDlAccel";
-    private static final String ID_PREFIX =
-            "sysdl2:v" + BuildConfig.VERSION_CODE + ":";
+    private final String generationToken =
+            Long.toUnsignedString(
+                    android.os.SystemClock.elapsedRealtimeNanos(),
+                    36);
+    private final String hookIdPrefix =
+            "sysdl2:v"
+                    + BuildConfig.VERSION_CODE
+                    + ":"
+                    + BuildConfig.BUILD_ID
+                    + ":"
+                    + generationToken
+                    + ":";
 
     private static final String[] DOWNLOADS_UI_CLASSES = {
             "com.android.providers.downloads.ui.DownloadList",
@@ -87,7 +97,9 @@ public final class AcceleratorModule extends XposedModule {
                 "module loaded process=" + processName
                         + " sdk=" + Build.VERSION.SDK_INT
                         + " api=" + getApiVersion()
-                        + " version=" + BuildConfig.VERSION_CODE);
+                        + " version=" + BuildConfig.VERSION_CODE
+                        + " build=" + BuildConfig.BUILD_ID
+                        + " generation=" + generationToken);
     }
 
     @Override
@@ -207,7 +219,11 @@ public final class AcceleratorModule extends XposedModule {
                             + " removed=" + teardown.removed
                             + " failed=" + teardown.failed
                             + " targetVersion="
-                            + BuildConfig.VERSION_CODE);
+                            + BuildConfig.VERSION_CODE
+                            + " build="
+                            + BuildConfig.BUILD_ID
+                            + " generation="
+                            + generationToken);
 
             if (teardown.failed > 0) {
                 emit(Log.ERROR,
@@ -234,7 +250,11 @@ public final class AcceleratorModule extends XposedModule {
                     "HOT_RELOAD_READY",
                     "scope=" + scope.packageName
                             + " version="
-                            + BuildConfig.VERSION_CODE);
+                            + BuildConfig.VERSION_CODE
+                            + " build="
+                            + BuildConfig.BUILD_ID
+                            + " generation="
+                            + generationToken);
         } catch (Throwable t) {
             emit(Log.ERROR,
                     "hot reload failed scope=" + scope.packageName, t);
@@ -319,7 +339,9 @@ public final class AcceleratorModule extends XposedModule {
                 processContext,
                 "ADAPTER_INSTALL",
                 "process=" + processName
-                        + " version=" + BuildConfig.VERSION_CODE);
+                        + " version=" + BuildConfig.VERSION_CODE
+                        + " build=" + BuildConfig.BUILD_ID
+                        + " generation=" + generationToken);
 
         int networkHooks = installNetworkOpenHooks(processContext);
         int urlHooks = installUrlOpenHooks(processContext);
@@ -552,7 +574,7 @@ public final class AcceleratorModule extends XposedModule {
     }
 
     private void installRunContextHook(Method method) {
-        String id = ID_PREFIX + "run:" + method.toGenericString();
+        String id = hookIdPrefix + "run:" + method.toGenericString();
         if (!hookedIds.add(id)) {
             return;
         }
@@ -597,7 +619,7 @@ public final class AcceleratorModule extends XposedModule {
             try {
                 method.setAccessible(true);
                 String id =
-                        ID_PREFIX + "network:" + method.toGenericString();
+                        hookIdPrefix + "network:" + method.toGenericString();
                 if (!hookedIds.add(id)) {
                     continue;
                 }
@@ -646,7 +668,7 @@ public final class AcceleratorModule extends XposedModule {
             try {
                 method.setAccessible(true);
                 String id =
-                        ID_PREFIX + "url:" + method.toGenericString();
+                        hookIdPrefix + "url:" + method.toGenericString();
                 if (!hookedIds.add(id)) {
                     continue;
                 }
@@ -711,7 +733,7 @@ public final class AcceleratorModule extends XposedModule {
                 try {
                     method.setAccessible(true);
                     String id =
-                            ID_PREFIX + "httpengine-bind:"
+                            hookIdPrefix + "httpengine-bind:"
                                     + method.toGenericString();
                     if (hookedIds.add(id)) {
                         hook(method)
@@ -755,7 +777,7 @@ public final class AcceleratorModule extends XposedModule {
             try {
                 method.setAccessible(true);
                 String id =
-                        ID_PREFIX + "httpengine-open:"
+                        hookIdPrefix + "httpengine-open:"
                                 + method.toGenericString();
                 if (!hookedIds.add(id)) {
                     continue;
@@ -825,7 +847,7 @@ public final class AcceleratorModule extends XposedModule {
             }
 
             method.setAccessible(true);
-            String id = ID_PREFIX + "engine:" + key;
+            String id = hookIdPrefix + "engine:" + key;
             hookedIds.add(id);
 
             hook(method)
@@ -918,7 +940,7 @@ public final class AcceleratorModule extends XposedModule {
             return;
         }
 
-        String id = ID_PREFIX + "conn:" + key;
+        String id = hookIdPrefix + "conn:" + key;
         hookedIds.add(id);
 
         hook(method)

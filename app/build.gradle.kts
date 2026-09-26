@@ -1,3 +1,5 @@
+val buildId = (System.getenv("GITHUB_SHA") ?: "local").take(12)
+
 plugins {
     id("com.android.application")
 }
@@ -11,8 +13,9 @@ android {
         applicationId = "dev.axymorrsen.systemdownloadaccelerator"
         minSdk = 26
         targetSdk = 37
-        versionCode = 21
-        versionName = "0.5.0-alpha05"
+        versionCode = 22
+        versionName = "0.5.0-alpha06"
+        buildConfigField("String", "BUILD_ID", "\"$buildId\"")
     }
 
     buildFeatures {
