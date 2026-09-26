@@ -1,0 +1,36 @@
+plugins {
+    id("com.android.application")
+}
+
+android {
+    namespace = "dev.axymorrsen.systemdownloadaccelerator"
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = "dev.axymorrsen.systemdownloadaccelerator"
+        minSdk = 26
+        targetSdk = 37
+        versionCode = 1
+        versionName = "0.1.0-alpha01"
+    }
+
+    buildTypes {
+        release { isMinifyEnabled = false }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
+        }
+    }
+}
+
+dependencies {
+    compileOnly("io.github.libxposed:api:102.0.0")
+    testImplementation("junit:junit:4.13.2")
+}

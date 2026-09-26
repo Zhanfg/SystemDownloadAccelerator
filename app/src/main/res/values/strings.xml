@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">System Download Accelerator</string>
+    <string name="module_description">Accelerates Android DownloadManager while preserving the system download pipeline.</string>
+</resources>
