@@ -303,8 +303,8 @@ final class Dsp {
         double peak = 0.0;
         for (double v : h) peak = Math.max(peak, Math.abs(v));
         if (peak > 0.95) {
-            double scale = 0.95 / peak;
-            for (int i = 0; i < h.length; i++) h[i] *= scale;
+            double peakScale = 0.95 / peak;
+            for (int i = 0; i < h.length; i++) h[i] *= peakScale;
         }
         writePcm16MonoWav(out, h, SAMPLE_RATE);
         return out;
