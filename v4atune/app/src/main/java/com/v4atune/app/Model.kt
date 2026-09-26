@@ -105,6 +105,8 @@ data class Plan(
     val eqLevels: DoubleArray,
     val firDb: DoubleArray,
     val firFrequencies: DoubleArray,
+    val kernel: FloatArray?,
+    val commands: List<ViperCommand>,
     val decisions: Map<Component, Pair<Boolean, String>>,
     val ddc44: FloatArray? = null,
     val ddc48: FloatArray? = null,
