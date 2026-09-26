@@ -551,7 +551,11 @@ object TuningPlanner {
         return if (deltaDb > 0) amount else -amount
     }
 
-    private fun dynamicEqJson(enabled: Boolean, peaks: List<Peak>): JSONObject {
+    private fun dynamicEqJson(
+        enabled: Boolean,
+        peaks: List<Peak>,
+        strategy: DynamicEqStrategy,
+    ): JSONObject {
         val p = if (peaks.isEmpty()) listOf(Peak(1000.0, -1.0, 1.4)) else peaks
         return obj(
             "enable", enabled,
@@ -559,52 +563,46 @@ object TuningPlanner {
             "freqs", arr(p.map { it.f.toInt() }),
             "qs", arr(p.map { it.q }),
             "gains", arr(p.map { it.gain }),
-            "thresholds", arr(p.map { -20.0 }),
-            "attacks", arr(p.map { 8.0 }),
-            "releases", arr(p.map { 120.0 }),
+            "thresholds", arr(p.map { strategy.thresholdDb }),
+            "attacks", arr(p.map { strategy.attackMs }),
+            "releases", arr(p.map { strategy.releaseMs }),
             "filterTypes", arr(p.map { 0 }),
         )
     }
 
-    private fun fetJson(enabled: Boolean, scene: Scene) = obj(
+    private fun fetJson(enabled: Boolean, strategy: LoudnessStrategy) = obj(
         "enable", enabled,
-        "threshold", dbToRaw(if (scene == Scene.Night) -22.0 else -14.0),
-        "ratio", if (scene == Scene.Night) -1.55 else -1.30,
+        "threshold", dbToRaw(strategy.fetThresholdDb),
+        "ratio", strategy.fetRatio,
         "kneeAuto", true,
         "knee", 0.0,
         "kneeMulti", 0.0,
         "gainAuto", true,
         "gain", 0.0,
         "attackAuto", false,
-        "attack", if (scene == Scene.Night) 0.025 else 0.018,
-        "maxAttack", if (scene == Scene.Night) 0.080 else 0.060,
+        "attack", strategy.fetAttackSec,
+        "maxAttack", strategy.fetAttackSec * 3.2,
         "releaseAuto", false,
-        "release", if (scene == Scene.Night) 0.180 else 0.120,
-        "maxRelease", if (scene == Scene.Night) 0.320 else 0.250,
+        "release", strategy.fetReleaseSec,
+        "maxRelease", strategy.fetReleaseSec * 1.8,
         "crest", 0.100,
         "adapt", 2.0,
         "noClip", true,
     )
 
-    private fun multibandJson(enabled: Boolean, scene: Scene) = obj(
+    private fun multibandJson(enabled: Boolean, strategy: LoudnessStrategy) = obj(
         "enable", enabled,
         "bandEnables", arr(List(5) { true }),
-        "crossovers", arr(listOf(160, 630, 2500, 8000)),
-        "thresholds", arr(
-            (if (scene == Scene.Outdoor) listOf(-22.0, -20.0, -18.0, -18.0, -19.0)
-            else listOf(-18.0, -16.0, -15.0, -15.0, -16.0)).map(::dbToRaw),
-        ),
-        "ratios", arr(
-            if (scene == Scene.Outdoor) listOf(-1.42, -1.38, -1.32, -1.28, -1.24)
-            else listOf(-1.25, -1.25, -1.22, -1.20, -1.18),
-        ),
+        "crossovers", arr(strategy.mbcCrossovers),
+        "thresholds", arr(strategy.mbcThresholdsDb.map(::dbToRaw)),
+        "ratios", arr(strategy.mbcRatios),
         "gains", arr(List(5) { 0.0 }),
         "knees", arr(List(5) { 0.0 }),
         "kneeMultis", arr(List(5) { 0.0 }),
-        "attacks", arr(listOf(0.012, 0.010, 0.008, 0.006, 0.006)),
-        "maxAttacks", arr(listOf(0.060, 0.055, 0.050, 0.045, 0.045)),
-        "releases", arr(listOf(0.160, 0.140, 0.120, 0.100, 0.090)),
-        "maxReleases", arr(listOf(0.300, 0.280, 0.240, 0.220, 0.200)),
+        "attacks", arr(strategy.mbcAttacksSec),
+        "maxAttacks", arr(strategy.mbcAttacksSec.map { it * 5.0 }),
+        "releases", arr(strategy.mbcReleasesSec),
+        "maxReleases", arr(strategy.mbcReleasesSec.map { it * 1.8 }),
         "crests", arr(List(5) { 0.100 }),
         "adapts", arr(List(5) { 2.0 }),
         "kneeAutos", arr(List(5) { true }),
