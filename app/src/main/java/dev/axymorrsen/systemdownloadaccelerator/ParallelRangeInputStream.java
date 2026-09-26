@@ -1,6 +1,7 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
 import dev.axymorrsen.systemdownloadaccelerator.core.RangePart;
+import dev.axymorrsen.systemdownloadaccelerator.engine.AdaptiveConcurrencyController;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -16,6 +17,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -23,10 +25,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Sequential InputStream backed by parallel immutable Range workers.
  *
- * Each micro-part is written into a small temporary file. The reader consumes
- * parts in order while later parts are prefetched in parallel. Scheduling is
- * windowed, so temporary storage is bounded instead of duplicating the entire
- * download.
+ * Concurrency starts conservatively and can ramp at runtime when measured
+ * throughput proves that additional sockets are still useful.
  */
 final class ParallelRangeInputStream extends InputStream {
     static final class RangeConnection {
@@ -57,6 +57,8 @@ final class ParallelRangeInputStream extends InputStream {
 
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final int MAX_PART_RETRIES = 3;
+    private static final long TUNE_INTERVAL_MS = 2500L;
+    private static final long CACHE_WINDOW_BYTES = 512L * 1024L * 1024L;
 
     private static final class PartState {
         final RangePart part;
@@ -79,14 +81,22 @@ final class ParallelRangeInputStream extends InputStream {
     private final HttpURLConnection original;
     private final ParallelRangeEngine.EntityValidator validator;
     private final long totalLength;
+    private final long sessionLength;
+    private final long averagePartBytes;
     private final List<PartState> states;
-    private final int workers;
-    private final int maxAheadParts;
+    private final int initialWorkers;
+    private final int maxWorkers;
     private final File sessionDir;
 
     private final ExecutorService pool;
+    private final AdaptiveConcurrencyController controller;
+    private final AtomicInteger launchedWorkers = new AtomicInteger(0);
     private final AtomicInteger nextToClaim = new AtomicInteger(0);
+    private final AtomicLong totalDownloaded = new AtomicLong(0L);
     private final Object schedulerLock = new Object();
+
+    private final long startedNs = System.nanoTime();
+    private final Thread tunerThread;
 
     private volatile boolean cancelled;
     private volatile boolean closed;
@@ -104,7 +114,8 @@ final class ParallelRangeInputStream extends InputStream {
             ParallelRangeEngine.EntityValidator validator,
             long totalLength,
             List<RangePart> parts,
-            int workers,
+            int initialWorkers,
+            int maxWorkers,
             File cacheRoot) throws IOException {
         this.url = url;
         this.metadata = metadata;
@@ -112,8 +123,26 @@ final class ParallelRangeInputStream extends InputStream {
         this.original = original;
         this.validator = validator;
         this.totalLength = totalLength;
-        this.workers = workers;
-        this.maxAheadParts = Math.max(workers * 2, workers + 1);
+        this.initialWorkers = initialWorkers;
+        this.maxWorkers = maxWorkers;
+
+        if (initialWorkers < 1 || maxWorkers < initialWorkers) {
+            throw new IllegalArgumentException(
+                    "bad worker range "
+                            + initialWorkers
+                            + ".."
+                            + maxWorkers);
+        }
+
+        long bytes = 0L;
+        for (RangePart part : parts) {
+            bytes += part.length();
+        }
+        sessionLength = bytes;
+        averagePartBytes = Math.max(
+                1L,
+                (sessionLength + Math.max(1, parts.size()) - 1L)
+                        / Math.max(1, parts.size()));
 
         sessionDir = new File(
                 cacheRoot,
@@ -129,8 +158,13 @@ final class ParallelRangeInputStream extends InputStream {
                     new File(sessionDir, "p" + part.index + ".tmp")));
         }
 
+        controller =
+                new AdaptiveConcurrencyController(
+                        initialWorkers,
+                        maxWorkers);
+
         pool = Executors.newFixedThreadPool(
-                workers,
+                maxWorkers,
                 runnable -> {
                     Thread thread = new Thread(
                             runnable,
@@ -139,9 +173,22 @@ final class ParallelRangeInputStream extends InputStream {
                     return thread;
                 });
 
-        for (int i = 0; i < workers; i++) {
-            pool.execute(this::workerLoop);
-        }
+        startWorkers(initialWorkers);
+
+        tunerThread = new Thread(
+                this::tuneLoop,
+                "SysDlRangeTune");
+        tunerThread.setDaemon(true);
+        tunerThread.start();
+
+        EngineTelemetry.emit(
+                metadata.context,
+                "ADAPT_INIT",
+                "initial=" + initialWorkers
+                        + " max=" + maxWorkers
+                        + " parts=" + parts.size()
+                        + " avgPartMiB="
+                        + formatMiB(averagePartBytes));
     }
 
     @Override
@@ -201,7 +248,8 @@ final class ParallelRangeInputStream extends InputStream {
                     state.lock.wait(100L);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    throw new InterruptedIOException("range read interrupted");
+                    throw new InterruptedIOException(
+                            "range read interrupted");
                 }
             }
         }
@@ -236,6 +284,11 @@ final class ParallelRangeInputStream extends InputStream {
 
         closeCurrentReader();
 
+        try {
+            tunerThread.interrupt();
+        } catch (Throwable ignored) {
+        }
+
         pool.shutdownNow();
         try {
             pool.awaitTermination(1500L, TimeUnit.MILLISECONDS);
@@ -244,6 +297,116 @@ final class ParallelRangeInputStream extends InputStream {
         }
 
         cleanupFiles();
+    }
+
+    private void startWorkers(int target) {
+        int capped = Math.max(
+                1,
+                Math.min(maxWorkers, target));
+
+        while (!cancelled) {
+            int current = launchedWorkers.get();
+            if (current >= capped) {
+                return;
+            }
+            if (!launchedWorkers.compareAndSet(
+                    current,
+                    current + 1)) {
+                continue;
+            }
+
+            try {
+                pool.execute(this::workerLoop);
+            } catch (RejectedExecutionException rejected) {
+                launchedWorkers.decrementAndGet();
+                return;
+            }
+        }
+    }
+
+    private void tuneLoop() {
+        long previousBytes = totalDownloaded.get();
+        long previousNs = System.nanoTime();
+        boolean finalHoldReported = false;
+
+        while (!cancelled && !closed) {
+            try {
+                Thread.sleep(TUNE_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                return;
+            }
+
+            if (cancelled || closed) {
+                return;
+            }
+
+            long nowNs = System.nanoTime();
+            long bytes = totalDownloaded.get();
+            long deltaBytes = Math.max(0L, bytes - previousBytes);
+            long deltaNs = Math.max(1L, nowNs - previousNs);
+
+            double bytesPerSecond =
+                    deltaBytes * 1_000_000_000.0 / deltaNs;
+            long remaining =
+                    Math.max(0L, sessionLength - bytes);
+
+            AdaptiveConcurrencyController.Decision decision =
+                    controller.sample(
+                            bytesPerSecond,
+                            remaining);
+
+            if (decision.action
+                    == AdaptiveConcurrencyController.Action.RAMP) {
+                startWorkers(decision.workers);
+                finalHoldReported = false;
+                EngineTelemetry.emit(
+                        metadata.context,
+                        "ADAPT_RAMP",
+                        "workers=" + decision.workers
+                                + "/" + maxWorkers
+                                + " speedMiBs="
+                                + formatMiBPerSecond(
+                                        bytesPerSecond)
+                                + " remainingMiB="
+                                + formatMiB(remaining));
+            } else if (decision.action
+                    == AdaptiveConcurrencyController.Action.HOLD) {
+                if (!finalHoldReported
+                        && (decision.reason.contains("gain")
+                        || decision.reason.contains("remaining")
+                        || decision.reason.contains("per-worker"))) {
+                    finalHoldReported = true;
+                    EngineTelemetry.emit(
+                            metadata.context,
+                            "ADAPT_HOLD",
+                            "workers=" + decision.workers
+                                    + "/" + maxWorkers
+                                    + " speedMiBs="
+                                    + formatMiBPerSecond(
+                                            bytesPerSecond)
+                                    + " gain="
+                                    + formatRatio(
+                                            decision.gainRatio)
+                                    + " reason="
+                                    + decision.reason);
+                }
+            } else if (decision.action
+                    == AdaptiveConcurrencyController.Action.CEILING) {
+                if (!finalHoldReported) {
+                    finalHoldReported = true;
+                    EngineTelemetry.emit(
+                            metadata.context,
+                            "ADAPT_MAX",
+                            "workers=" + decision.workers
+                                    + " speedMiBs="
+                                    + formatMiBPerSecond(
+                                            bytesPerSecond));
+                }
+            }
+
+            previousBytes = bytes;
+            previousNs = nowNs;
+        }
     }
 
     private void workerLoop() {
@@ -268,9 +431,24 @@ final class ParallelRangeInputStream extends InputStream {
                     return null;
                 }
 
-                int limit = consumedPartIndex + maxAheadParts;
+                int workers = Math.max(
+                        1,
+                        controller.workers());
+                long byBytes = Math.max(
+                        workers,
+                        CACHE_WINDOW_BYTES
+                                / Math.max(1L, averagePartBytes));
+                int ahead = (int) Math.max(
+                        workers,
+                        Math.min(
+                                (long) workers * 2L,
+                                byBytes));
+
+                int limit = consumedPartIndex + ahead;
                 if (next < limit) {
-                    if (nextToClaim.compareAndSet(next, next + 1)) {
+                    if (nextToClaim.compareAndSet(
+                            next,
+                            next + 1)) {
                         return states.get(next);
                     }
                     continue;
@@ -374,6 +552,7 @@ final class ParallelRangeInputStream extends InputStream {
 
                 out.write(buffer, 0, count);
                 state.downloaded.addAndGet(count);
+                totalDownloaded.addAndGet(count);
                 remaining -= count;
 
                 synchronized (state.lock) {
@@ -416,10 +595,23 @@ final class ParallelRangeInputStream extends InputStream {
     }
 
     private void finishSuccess() {
+        double elapsedSeconds =
+                Math.max(
+                        0.001,
+                        (System.nanoTime() - startedNs)
+                                / 1_000_000_000.0);
+        double averageBps =
+                sessionLength / elapsedSeconds;
+
         EngineTelemetry.emit(
                 metadata.context,
                 "COMPLETE",
-                "parallel stream completed");
+                "bytes=" + sessionLength
+                        + " peakWorkers="
+                        + launchedWorkers.get()
+                        + "/" + maxWorkers
+                        + " avgMiBs="
+                        + formatMiBPerSecond(averageBps));
         close();
     }
 
@@ -448,13 +640,16 @@ final class ParallelRangeInputStream extends InputStream {
     private void throwIfInterruptedOrFailed() throws IOException {
         if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedIOException(
-                    "native DownloadThread interrupted");
+                    "native download thread interrupted");
         }
         if (sessionFailure != null) {
-            throw asIo("parallel range session failed", sessionFailure);
+            throw asIo(
+                    "parallel range session failed",
+                    sessionFailure);
         }
         if (cancelled && !closed) {
-            throw new IOException("parallel range session cancelled");
+            throw new IOException(
+                    "parallel range session cancelled");
         }
     }
 
@@ -489,5 +684,26 @@ final class ParallelRangeInputStream extends InputStream {
     private static void sleepRetry(int attempt)
             throws InterruptedException {
         Thread.sleep(Math.min(1500L, 350L * attempt));
+    }
+
+    private static String formatMiB(long bytes) {
+        return String.format(
+                java.util.Locale.US,
+                "%.1f",
+                bytes / (1024.0 * 1024.0));
+    }
+
+    private static String formatMiBPerSecond(double bps) {
+        return String.format(
+                java.util.Locale.US,
+                "%.2f",
+                bps / (1024.0 * 1024.0));
+    }
+
+    private static String formatRatio(double ratio) {
+        return String.format(
+                java.util.Locale.US,
+                "%.2f",
+                ratio);
     }
 }

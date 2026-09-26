@@ -137,14 +137,20 @@ final class ParallelRangeEngine {
             }
 
             Conditions conditions = detectConditions(context, network);
-            int workers = ADAPTIVE.workers(remaining, conditions);
-            if (workers < 2) {
+            int initialWorkers =
+                    ADAPTIVE.initialWorkers(remaining, conditions);
+            int maxWorkers =
+                    ADAPTIVE.maxWorkers(remaining, conditions);
+            if (initialWorkers < 2 || maxWorkers < 2) {
                 fallback(context, "adaptive policy selected one worker");
                 return null;
             }
 
             List<RangePart> parts =
-                    MicroPartPlanner.plan(startOffset, totalLength, workers);
+                    MicroPartPlanner.plan(
+                            startOffset,
+                            totalLength,
+                            maxWorkers);
             if (parts.size() < 2) {
                 fallback(context, "planner produced one part");
                 return null;
@@ -159,10 +165,12 @@ final class ParallelRangeEngine {
             EngineTelemetry.emit(
                     context,
                     "PARTS",
-                    "workers=" + workers
+                    "initial=" + initialWorkers
+                            + " max=" + maxWorkers
                             + " parts=" + parts.size()
                             + " network=" + conditions.networkKind
-                            + " metered=" + conditions.metered);
+                            + " metered=" + conditions.metered
+                            + " linkKbps=" + conditions.downstreamKbps);
 
             ParallelRangeInputStream stream = new ParallelRangeInputStream(
                     original.getURL(),
@@ -172,7 +180,8 @@ final class ParallelRangeEngine {
                     validator,
                     totalLength,
                     parts,
-                    workers,
+                    initialWorkers,
+                    maxWorkers,
                     cacheRoot);
 
             // Abort the unused original full-body socket. DownloadThread has
@@ -456,7 +465,18 @@ final class ParallelRangeEngine {
             boolean powerSave = pm != null && pm.isPowerSaveMode();
             int thermal = pm == null ? 0 : pm.getCurrentThermalStatus();
 
-            return new Conditions(kind, metered, powerSave, thermal);
+            int downstreamKbps = caps == null
+                    ? 0
+                    : Math.max(
+                            0,
+                            caps.getLinkDownstreamBandwidthKbps());
+
+            return new Conditions(
+                    kind,
+                    metered,
+                    powerSave,
+                    thermal,
+                    downstreamKbps);
         } catch (Throwable ignored) {
             return new Conditions(
                     Conditions.NetworkKind.UNKNOWN,

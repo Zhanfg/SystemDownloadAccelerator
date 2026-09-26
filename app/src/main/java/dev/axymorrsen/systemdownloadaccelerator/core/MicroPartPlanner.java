@@ -7,14 +7,14 @@ import java.util.List;
 /**
  * AB-inspired load balancing without mutating in-flight ranges.
  *
- * We create more micro-parts than workers. A worker that finishes early claims
- * another part, which gives dynamic load balancing while every HTTP request
- * keeps immutable boundaries.
+ * Workers consume immutable micro-parts from a shared queue. Large files create
+ * many more parts than workers so concurrency can ramp at runtime.
  */
 public final class MicroPartPlanner {
     public static final long DEFAULT_MIN_PART_BYTES = 1024L * 1024L;
+    public static final long TARGET_PART_BYTES = 8L * 1024L * 1024L;
     public static final int DEFAULT_PARTS_PER_WORKER = 4;
-    public static final int ABSOLUTE_MAX_PARTS = 64;
+    public static final int ABSOLUTE_MAX_PARTS = 8192;
 
     private MicroPartPlanner() {}
 
@@ -44,13 +44,20 @@ public final class MicroPartPlanner {
         if (partsPerWorker < 1) throw new IllegalArgumentException("partsPerWorker < 1");
 
         long size = totalLength - startOffset;
-        long maxUsefulParts = (size + minPartBytes - 1L) / minPartBytes;
-        long desiredParts = Math.min(
-                (long) ABSOLUTE_MAX_PARTS,
-                (long) workers * partsPerWorker);
+
+        long byWorker =
+                Math.max(1L, (long) workers * partsPerWorker);
+        long byTargetSize =
+                Math.max(1L, (size + TARGET_PART_BYTES - 1L) / TARGET_PART_BYTES);
+        long byMinimumSize =
+                Math.max(1L, (size + minPartBytes - 1L) / minPartBytes);
+
+        long desired = Math.max(byWorker, byTargetSize);
         int partCount = (int) Math.max(
                 1L,
-                Math.min(maxUsefulParts, desiredParts));
+                Math.min(
+                        (long) ABSOLUTE_MAX_PARTS,
+                        Math.min(byMinimumSize, desired)));
 
         long baseSize = size / partCount;
         long remainder = size % partCount;

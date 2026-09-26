@@ -115,3 +115,20 @@ The app includes a `生成诊断日志` button. It writes a shareable text repor
 The report includes module/framework versions, scope and running targets, self-test
 events, filtered Android logcat and (when root access is available) LSPosed module
 logs and relevant process snapshots.
+
+
+## Adaptive concurrency
+
+Large downloads use throughput-driven concurrency rather than a fixed thread
+count.
+
+- start conservatively at 2-4 workers (8 only for very large, very fast links);
+- compute a hard ceiling from file size, network kind, metered state, thermal
+  state, power-save mode and Android's downstream-bandwidth hint;
+- ramp by powers of two only when measured aggregate throughput still improves;
+- stop adding workers when marginal gain falls below 12 percent;
+- current hard maximum is 64 workers for very large files on suitable links;
+- VPN/cellular, metered, thermal and low-bandwidth conditions reduce that ceiling.
+
+Workers consume immutable ~8 MiB micro-parts from a shared queue, so the number
+of work units is independent from the current worker count.

@@ -8,33 +8,57 @@ import java.util.List;
 import org.junit.Test;
 
 public final class MicroPartPlannerTest {
+    private static final long MIB = 1024L * 1024L;
+    private static final long GIB = 1024L * MIB;
+
     @Test
     public void sixteenMiBWithTwoWorkersCreatesEightBalancedParts() {
-        long size = 16L * 1024L * 1024L;
-        List<RangePart> parts = MicroPartPlanner.plan(0L, size, 2);
+        long size = 16L * MIB;
+        List<RangePart> parts =
+                MicroPartPlanner.plan(0L, size, 2);
         assertEquals(8, parts.size());
         assertEquals(0L, parts.get(0).from);
-        assertEquals(size - 1L, parts.get(parts.size() - 1).to);
+        assertEquals(
+                size - 1L,
+                parts.get(parts.size() - 1).to);
+    }
+
+    @Test
+    public void multiGiBPlanCreatesEnoughWorkForSixtyFourWorkers() {
+        long size = 16L * GIB;
+        List<RangePart> parts =
+                MicroPartPlanner.plan(0L, size, 64);
+
+        assertTrue(parts.size() >= 2048);
+        assertTrue(parts.size() <= MicroPartPlanner.ABSOLUTE_MAX_PARTS);
+        assertEquals(0L, parts.get(0).from);
+        assertEquals(
+                size - 1L,
+                parts.get(parts.size() - 1).to);
     }
 
     @Test
     public void resumedPlanStartsAtResumeOffset() {
-        long total = 100L * 1024L * 1024L;
-        long start = 13L * 1024L * 1024L;
-        List<RangePart> parts = MicroPartPlanner.plan(start, total, 4);
+        long total = 100L * MIB;
+        long start = 13L * MIB;
+        List<RangePart> parts =
+                MicroPartPlanner.plan(start, total, 4);
         assertEquals(start, parts.get(0).from);
-        assertEquals(total - 1L, parts.get(parts.size() - 1).to);
+        assertEquals(
+                total - 1L,
+                parts.get(parts.size() - 1).to);
     }
 
     @Test
     public void rangesAreGapFreeAndNonOverlapping() {
-        List<RangePart> parts = MicroPartPlanner.plan(17L, 9999999L, 8);
+        List<RangePart> parts =
+                MicroPartPlanner.plan(17L, 9_999_999L, 8);
         long cursor = 17L;
         for (RangePart part : parts) {
             assertEquals(cursor, part.from);
             assertTrue(part.length() > 0L);
             cursor = part.to + 1L;
         }
-        assertEquals(9999999L, cursor);
+        assertEquals(9_999_999L, cursor);
     }
 }
