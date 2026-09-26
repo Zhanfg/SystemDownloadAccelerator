@@ -38,11 +38,8 @@ jobs:
         with:
           gradle-version: "9.2.1"
 
-      - name: Compile Kotlin
-        run: gradle :app:compileDebugKotlin --stacktrace --no-daemon --build-cache
-
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace --no-daemon --build-cache
+      - name: Test, lint and build
+        run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace --no-daemon --build-cache
 
       - name: APK sanity checks
         run: |
