@@ -100,8 +100,20 @@ final class ParallelRangeEngine {
             }
 
             Network network = metadata.network;
-            if (network == null) {
-                fallback(context, "no originating Android Network");
+
+            if (metadata.factoryKind == ConnectionRegistry.FactoryKind.HTTP_ENGINE
+                    && network == null) {
+                fallback(
+                        context,
+                        "HttpEngine origin has no replayable bound Network");
+                return null;
+            }
+
+            if (metadata.factoryKind == ConnectionRegistry.FactoryKind.UNKNOWN
+                    && network == null) {
+                fallback(
+                        context,
+                        "unknown connection factory without Network");
                 return null;
             }
 
@@ -110,7 +122,9 @@ final class ParallelRangeEngine {
                     "STREAM_INTERCEPT",
                     "code=" + code
                             + " start=" + startOffset
-                            + " total=" + totalLength);
+                            + " total=" + totalLength
+                            + " factory=" + metadata.factoryKind
+                            + " boundNetwork=" + (network != null));
 
             if (code == HttpURLConnection.HTTP_OK
                     && !probeRange(
@@ -194,7 +208,7 @@ final class ParallelRangeEngine {
             long totalLength) throws Exception {
         return ConnectionRegistry.internal(() -> {
             HttpURLConnection conn =
-                    (HttpURLConnection) metadata.network.openConnection(url);
+                    openSiblingConnection(url, metadata);
             conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(
                     original.getConnectTimeout() > 0
@@ -245,6 +259,46 @@ final class ParallelRangeEngine {
                     body,
                     range.to);
         });
+    }
+
+    private static HttpURLConnection openSiblingConnection(
+            URL url,
+            ConnectionRegistry.Metadata metadata) throws IOException {
+        switch (metadata.factoryKind) {
+            case NETWORK:
+                if (metadata.network == null) {
+                    throw new IOException(
+                            "NETWORK provenance missing bound Network");
+                }
+                return (HttpURLConnection)
+                        metadata.network.openConnection(url);
+
+            case URL:
+                /*
+                 * Recreate the request through the same factory that created
+                 * the original ColorOS connection. This preserves the process
+                 * default proxy/VPN/routing policy without inventing a Network
+                 * object that the host never exposed.
+                 */
+                return (HttpURLConnection) url.openConnection();
+
+            case HTTP_ENGINE:
+                if (metadata.network == null) {
+                    throw new IOException(
+                            "HttpEngine provenance is not safely replayable");
+                }
+                return (HttpURLConnection)
+                        metadata.network.openConnection(url);
+
+            case UNKNOWN:
+            default:
+                if (metadata.network != null) {
+                    return (HttpURLConnection)
+                            metadata.network.openConnection(url);
+                }
+                throw new IOException(
+                        "unknown connection factory is not replayable");
+        }
     }
 
     private static boolean probeRange(
@@ -363,8 +417,18 @@ final class ParallelRangeEngine {
 
             ConnectivityManager cm =
                     context.getSystemService(ConnectivityManager.class);
+            Network policyNetwork = network;
+            if (policyNetwork == null && cm != null) {
+                try {
+                    policyNetwork = cm.getActiveNetwork();
+                } catch (Throwable ignored) {
+                }
+            }
+
             NetworkCapabilities caps =
-                    cm == null ? null : cm.getNetworkCapabilities(network);
+                    cm == null || policyNetwork == null
+                            ? null
+                            : cm.getNetworkCapabilities(policyNetwork);
 
             Conditions.NetworkKind kind =
                     Conditions.NetworkKind.UNKNOWN;

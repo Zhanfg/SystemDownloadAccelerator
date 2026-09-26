@@ -17,6 +17,19 @@ import java.util.WeakHashMap;
  * DownloadProvider. Weak keys avoid extending platform connection lifetime.
  */
 final class ConnectionRegistry {
+    enum FactoryKind {
+        UNKNOWN(0),
+        URL(1),
+        HTTP_ENGINE(2),
+        NETWORK(3);
+
+        final int strength;
+
+        FactoryKind(int strength) {
+            this.strength = strength;
+        }
+    }
+
     static final class ProviderExecution {
         final Context context;
         final Network network;
@@ -30,17 +43,56 @@ final class ConnectionRegistry {
     }
 
     static final class Metadata {
-        final Context context;
-        final Network network;
-        final int requestingUid;
+        volatile Context context;
+        volatile Network network;
+        volatile int requestingUid;
+        volatile FactoryKind factoryKind;
 
         private final LinkedHashMap<String, List<String>> headers =
                 new LinkedHashMap<>();
 
-        Metadata(Context context, Network network, int requestingUid) {
+        Metadata(
+                Context context,
+                Network network,
+                int requestingUid,
+                FactoryKind factoryKind) {
             this.context = context;
             this.network = network;
             this.requestingUid = requestingUid;
+            this.factoryKind = factoryKind == null
+                    ? FactoryKind.UNKNOWN
+                    : factoryKind;
+        }
+
+        synchronized void merge(
+                Context candidateContext,
+                Network candidateNetwork,
+                int candidateUid,
+                FactoryKind candidateKind) {
+            if (context == null && candidateContext != null) {
+                context = candidateContext;
+            }
+            if (requestingUid < 0 && candidateUid >= 0) {
+                requestingUid = candidateUid;
+            }
+
+            FactoryKind kind = candidateKind == null
+                    ? FactoryKind.UNKNOWN
+                    : candidateKind;
+
+            if (candidateNetwork != null) {
+                network = candidateNetwork;
+            }
+
+            if (kind.strength > factoryKind.strength) {
+                factoryKind = kind;
+            }
+
+            if (network != null
+                    && factoryKind.strength < FactoryKind.NETWORK.strength
+                    && kind == FactoryKind.NETWORK) {
+                factoryKind = FactoryKind.NETWORK;
+            }
         }
 
         synchronized void setHeader(String name, String value) {
@@ -135,7 +187,8 @@ final class ConnectionRegistry {
 
     static Metadata register(
             HttpURLConnection connection,
-            Network explicitNetwork) {
+            Network explicitNetwork,
+            FactoryKind factoryKind) {
         ProviderExecution execution = CURRENT.get();
 
         Context context = execution != null && execution.context != null
@@ -148,9 +201,25 @@ final class ConnectionRegistry {
 
         int uid = execution == null ? -1 : execution.requestingUid;
 
-        Metadata metadata = new Metadata(context, network, uid);
-        CONNECTIONS.put(connection, metadata);
-        return metadata;
+        synchronized (CONNECTIONS) {
+            Metadata existing = CONNECTIONS.get(connection);
+            if (existing != null) {
+                existing.merge(
+                        context,
+                        network,
+                        uid,
+                        factoryKind);
+                return existing;
+            }
+
+            Metadata metadata = new Metadata(
+                    context,
+                    network,
+                    uid,
+                    factoryKind);
+            CONNECTIONS.put(connection, metadata);
+            return metadata;
+        }
     }
 
     static Metadata get(HttpURLConnection connection) {

@@ -572,7 +572,8 @@ public final class AcceleratorModule extends XposedModule {
                                     && chain.getThisObject() instanceof Network) {
                                 observeConnection(
                                         (HttpURLConnection) result,
-                                        (Network) chain.getThisObject());
+                                        (Network) chain.getThisObject(),
+                                        ConnectionRegistry.FactoryKind.NETWORK);
                             }
                             return result;
                         });
@@ -655,6 +656,11 @@ public final class AcceleratorModule extends XposedModule {
 
         int count = 0;
         for (Method method : engineClass.getMethods()) {
+            if (Modifier.isAbstract(method.getModifiers())
+                    || Modifier.isNative(method.getModifiers())) {
+                continue;
+            }
+
             String name = method.getName();
 
             if ("bindToNetwork".equals(name)
@@ -726,7 +732,8 @@ public final class AcceleratorModule extends XposedModule {
                                                 chain.getThisObject());
                                 observeConnection(
                                         (HttpURLConnection) result,
-                                        network);
+                                        network,
+                                        ConnectionRegistry.FactoryKind.HTTP_ENGINE);
                             }
                             return result;
                         });
@@ -789,7 +796,8 @@ public final class AcceleratorModule extends XposedModule {
                                 && result instanceof HttpURLConnection) {
                             observeConnection(
                                     (HttpURLConnection) result,
-                                    execution.network);
+                                    execution.network,
+                                    ConnectionRegistry.FactoryKind.HTTP_ENGINE);
                         }
                         return result;
                     });
@@ -798,15 +806,21 @@ public final class AcceleratorModule extends XposedModule {
 
     private void observeConnection(
             HttpURLConnection connection,
-            Network network) {
+            Network network,
+            ConnectionRegistry.FactoryKind factoryKind) {
         ConnectionRegistry.Metadata metadata =
-                ConnectionRegistry.register(connection, network);
+                ConnectionRegistry.register(
+                        connection,
+                        network,
+                        factoryKind);
         ensureConnectionClassHooks(connection.getClass());
 
         EngineTelemetry.emit(
                 metadata.context,
                 "CONNECTION",
                 connection.getClass().getName()
+                        + " factory=" + metadata.factoryKind
+                        + " boundNetwork=" + (metadata.network != null)
                         + " url=" + safeUrl(connection.getURL()));
     }
 
