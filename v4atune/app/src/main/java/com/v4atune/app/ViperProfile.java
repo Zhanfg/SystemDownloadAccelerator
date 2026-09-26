@@ -445,7 +445,7 @@ final class ViperProfile {
         return a;
     }
 
-    private static JSONArray arr(double[] values) {
+    private static JSONArray arr(double[] values) throws Exception {
         JSONArray a = new JSONArray();
         for (double value : values) a.put(value);
         return a;
