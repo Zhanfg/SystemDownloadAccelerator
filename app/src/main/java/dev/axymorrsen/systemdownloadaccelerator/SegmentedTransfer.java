@@ -12,6 +12,7 @@ import android.util.Log;
 
 import dev.axymorrsen.systemdownloadaccelerator.engine.AdaptivePolicy;
 import dev.axymorrsen.systemdownloadaccelerator.engine.Conditions;
+import dev.axymorrsen.systemdownloadaccelerator.engine.ContiguousProgress;
 import dev.axymorrsen.systemdownloadaccelerator.engine.RangeProbe;
 import dev.axymorrsen.systemdownloadaccelerator.engine.Segment;
 import dev.axymorrsen.systemdownloadaccelerator.engine.SegmentPlanner;
@@ -260,7 +261,9 @@ final class SegmentedTransfer {
                     }
                 }
 
-                long prefix = contiguousPrefix(segments, segmentWritten);
+                long prefix = ContiguousProgress.prefix(
+                        segments,
+                        snapshotProgress(segmentWritten));
                 if (prefix > publishedPrefix) {
                     setLong(rt.delta, "mCurrentBytes", prefix);
                     setBoolean(rt.thread, "mMadeProgress", true);
@@ -309,7 +312,9 @@ final class SegmentedTransfer {
                 sum += future.get();
             }
 
-            long prefix = contiguousPrefix(segments, segmentWritten);
+            long prefix = ContiguousProgress.prefix(
+                        segments,
+                        snapshotProgress(segmentWritten));
             if (sum != rt.totalBytes
                     || written.get() != rt.totalBytes
                     || prefix != rt.totalBytes) {
@@ -335,25 +340,12 @@ final class SegmentedTransfer {
         }
     }
 
-    private static long contiguousPrefix(
-            List<Segment> segments,
-            AtomicLongArray segmentWritten) {
-        long prefix = 0L;
-        for (int i = 0; i < segments.size(); i++) {
-            Segment segment = segments.get(i);
-            if (segment.startInclusive != prefix) {
-                break;
-            }
-
-            long bytes = Math.max(
-                    0L,
-                    Math.min(segment.length(), segmentWritten.get(i)));
-            prefix += bytes;
-            if (bytes < segment.length()) {
-                break;
-            }
+    private static long[] snapshotProgress(AtomicLongArray progress) {
+        long[] snapshot = new long[progress.length()];
+        for (int i = 0; i < snapshot.length; i++) {
+            snapshot[i] = progress.get(i);
         }
-        return prefix;
+        return snapshot;
     }
 
     private static long transferOne(
