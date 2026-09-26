@@ -620,7 +620,8 @@ public final class AcceleratorModule extends XposedModule {
                                     && result instanceof HttpURLConnection) {
                                 observeConnection(
                                         (HttpURLConnection) result,
-                                        null);
+                                        null,
+                                        ConnectionRegistry.FactoryKind.URL);
                             }
                             return result;
                         });
