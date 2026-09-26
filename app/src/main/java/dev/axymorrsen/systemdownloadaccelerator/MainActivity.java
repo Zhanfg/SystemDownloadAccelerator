@@ -152,8 +152,9 @@ public final class MainActivity extends Activity {
 
         LinearLayout testBox = cardContainer();
         TextView testExplain = text(
-                "在本机 127.0.0.1 启动临时 HTTP/Range 服务器，再由 Android 原生 "
-                        + "DownloadManager 下载 1 MiB。不会使用公网流量。",
+                "在本机 localhost 启动临时 HTTP/Range 服务器，再由 Android 原生 "
+                        + "DownloadManager 下载 16 MiB。若 Range 请求数达到 3+，说明分段引擎已真实接管。"
+                        + "不会使用公网流量。",
                 13, MUTED, false);
         testExplain.setLineSpacing(0f, 1.15f);
         testBox.addView(testExplain);
@@ -186,7 +187,7 @@ public final class MainActivity extends Activity {
         TextView note = text(
                 "状态以 LSPosed API 102 的 runningTargets 为准。DownloadProvider 和 "
                         + "Downloads UI 都可能在空闲时退出，因此“不在运行”不等于模块失效；"
-                        + "SystemUI 为常驻校验点，下载链路自检用于临时唤醒 Provider 并验证真实传输。",
+                        + "自检会验证真实 Range 探测与并行分段，而不只是验证原生下载能否完成。",
                 12, MUTED, false);
         note.setLineSpacing(0f, 1.18f);
         LinearLayout.LayoutParams noteLp = wrap();

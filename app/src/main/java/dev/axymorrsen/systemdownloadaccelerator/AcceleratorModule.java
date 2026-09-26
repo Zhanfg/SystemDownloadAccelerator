@@ -7,6 +7,7 @@ import android.util.Pair;
 
 import java.lang.reflect.Executable;
 import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -294,6 +295,10 @@ public final class AcceleratorModule extends XposedModule {
         String id = HOOK_PREFIX + method.toGenericString();
         hookedIds.add(id);
 
+        final boolean segmentedEntry = "transferData".equals(method.getName())
+                && method.getParameterCount() == 1
+                && method.getParameterTypes()[0] == HttpURLConnection.class;
+
         hook(method)
                 .setId(id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -304,6 +309,22 @@ public final class AcceleratorModule extends XposedModule {
                         ProbeSnapshot snapshot =
                                 DownloadInfoInspector.inspect(chain.getThisObject());
                         emit(Log.INFO, "download start " + snapshot.toSafeLogString());
+                    }
+
+                    if (segmentedEntry) {
+                        try {
+                            Object arg = chain.getArg(0);
+                            if (arg instanceof HttpURLConnection
+                                    && SegmentedTransfer.tryAccelerate(
+                                            chain.getThisObject(),
+                                            (HttpURLConnection) arg)) {
+                                emit(Log.INFO, "transferData handled by segmented engine");
+                                return null;
+                            }
+                        } catch (Throwable t) {
+                            emit(Log.WARN,
+                                    "segmented engine interceptor failed; native fallback", t);
+                        }
                     }
 
                     try {

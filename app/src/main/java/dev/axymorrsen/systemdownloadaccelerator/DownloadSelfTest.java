@@ -18,22 +18,22 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * End-to-end DownloadManager self-test.
+ * End-to-end DownloadManager and segmented-transfer self-test.
  *
- * A loopback HTTP server avoids public-network variability while still forcing
- * Android DownloadManager -> DownloadProvider -> DownloadThread to perform a
- * real HTTP transfer. The server supports byte ranges and a stable validator so
- * it can also be reused by the segmented-transfer tests later.
+ * The loopback server accepts connections concurrently so the original Android
+ * request can remain open while the accelerator issues a one-byte Range probe
+ * and parallel segment requests.
  */
 final class DownloadSelfTest {
     interface Listener {
         void onUpdate(String message, boolean terminal, boolean success);
     }
 
-    private static final int TEST_BYTES = 1024 * 1024;
-    private static final byte[] BLOCK = new byte[16 * 1024];
+    private static final int TEST_BYTES = 16 * 1024 * 1024;
+    private static final byte[] BLOCK = new byte[64 * 1024];
 
     private DownloadSelfTest() {}
 
@@ -53,24 +53,33 @@ final class DownloadSelfTest {
         long downloadId = -1L;
         File destination = null;
         AtomicBoolean stopServer = new AtomicBoolean(false);
+        AtomicInteger rangeRequests = new AtomicInteger();
+        AtomicInteger fullRequests = new AtomicInteger();
 
         try (ServerSocket server = new ServerSocket(
-                0, 8, InetAddress.getLoopbackAddress())) {
+                0, 16, InetAddress.getLoopbackAddress())) {
             server.setSoTimeout(1000);
 
             Thread serverThread = new Thread(
-                    () -> serve(server, stopServer),
+                    () -> serve(
+                            server,
+                            stopServer,
+                            rangeRequests,
+                            fullRequests),
                     "sysdl-loopback-http");
             serverThread.start();
 
             int port = server.getLocalPort();
-            listener.onUpdate("本地测试服务器已启动 · localhost:" + port,
-                    false, false);
+            listener.onUpdate(
+                    "本地 Range 测试服务器已启动 · localhost:" + port,
+                    false,
+                    false);
 
             String fileName = "SysDlProbe-" + System.currentTimeMillis() + ".bin";
             File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
             if (dir == null) {
-                throw new IllegalStateException("external-files Downloads directory unavailable");
+                throw new IllegalStateException(
+                        "external-files Downloads directory unavailable");
             }
             destination = new File(dir, fileName);
             if (destination.exists()) {
@@ -81,17 +90,19 @@ final class DownloadSelfTest {
             Uri uri = Uri.parse("http://localhost:" + port + "/probe.bin");
             DownloadManager.Request request = new DownloadManager.Request(uri)
                     .setTitle("System Download Accelerator self-test")
-                    .setDescription("Local DownloadManager / DownloadProvider probe")
+                    .setDescription("16 MiB local segmented DownloadProvider probe")
                     .setAllowedOverMetered(true)
                     .setAllowedOverRoaming(true)
                     .setDestinationInExternalFilesDir(
                             context, Environment.DIRECTORY_DOWNLOADS, fileName);
 
             downloadId = manager.enqueue(request);
-            listener.onUpdate("已提交 DownloadManager · ID " + downloadId,
-                    false, false);
+            listener.onUpdate(
+                    "已提交 16 MiB DownloadManager 测试 · ID " + downloadId,
+                    false,
+                    false);
 
-            long deadline = System.currentTimeMillis() + 20_000L;
+            long deadline = System.currentTimeMillis() + 30_000L;
             int lastStatus = -1;
 
             while (System.currentTimeMillis() < deadline) {
@@ -100,7 +111,8 @@ final class DownloadSelfTest {
                 try (Cursor cursor = manager.query(query)) {
                     if (cursor != null && cursor.moveToFirst()) {
                         int status = cursor.getInt(
-                                cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+                                cursor.getColumnIndexOrThrow(
+                                        DownloadManager.COLUMN_STATUS));
                         long downloaded = cursor.getLong(
                                 cursor.getColumnIndexOrThrow(
                                         DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
@@ -110,21 +122,35 @@ final class DownloadSelfTest {
 
                         if (status != lastStatus) {
                             listener.onUpdate(
-                                    statusText(status) + " · "
-                                            + downloaded + "/"
+                                    statusText(status)
+                                            + " · " + downloaded + "/"
                                             + (total > 0 ? total : TEST_BYTES)
-                                            + " bytes",
+                                            + " bytes"
+                                            + " · Range=" + rangeRequests.get(),
                                     false,
                                     false);
                             lastStatus = status;
                         }
 
                         if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                            listener.onUpdate(
-                                    "自检成功 · 原生 DownloadManager 完成 "
-                                            + downloaded + " bytes",
-                                    true,
-                                    true);
+                            int ranges = rangeRequests.get();
+                            int full = fullRequests.get();
+                            if (ranges >= 3) {
+                                listener.onUpdate(
+                                        "自检成功 · 分段引擎已触发 · Range请求 "
+                                                + ranges
+                                                + " · 原始请求 " + full
+                                                + " · 完成 " + downloaded + " bytes",
+                                        true,
+                                        true);
+                            } else {
+                                listener.onUpdate(
+                                        "下载成功，但未检测到分段引擎 · Range请求 "
+                                                + ranges
+                                                + " · 原始请求 " + full,
+                                        true,
+                                        false);
+                            }
                             return;
                         }
 
@@ -132,20 +158,24 @@ final class DownloadSelfTest {
                             int reason = cursor.getInt(
                                     cursor.getColumnIndexOrThrow(
                                             DownloadManager.COLUMN_REASON));
-                            String detail = "下载失败 · reason=" + reason;
-                            if (reason == 400) {
-                                detail += " · HTTP 400/明文策略拒绝";
-                            }
-                            listener.onUpdate(detail, true, false);
+                            listener.onUpdate(
+                                    "下载失败 · reason=" + reason
+                                            + " · Range=" + rangeRequests.get(),
+                                    true,
+                                    false);
                             return;
                         }
                     }
                 }
 
-                Thread.sleep(250L);
+                Thread.sleep(200L);
             }
 
-            listener.onUpdate("自检超时：20 秒内未完成本地下载", true, false);
+            listener.onUpdate(
+                    "自检超时 · Range=" + rangeRequests.get()
+                            + " · Full=" + fullRequests.get(),
+                    true,
+                    false);
         } catch (Throwable t) {
             String detail = t.getMessage();
             if (detail == null || detail.isBlank()) {
@@ -167,25 +197,44 @@ final class DownloadSelfTest {
         }
     }
 
-    private static void serve(ServerSocket server, AtomicBoolean stop) {
-        long deadline = System.currentTimeMillis() + 25_000L;
+    private static void serve(
+            ServerSocket server,
+            AtomicBoolean stop,
+            AtomicInteger rangeRequests,
+            AtomicInteger fullRequests) {
+        long deadline = System.currentTimeMillis() + 35_000L;
         while (!stop.get() && System.currentTimeMillis() < deadline) {
-            try (Socket socket = server.accept()) {
-                socket.setSoTimeout(5000);
-                handle(socket);
+            try {
+                Socket socket = server.accept();
+                socket.setSoTimeout(10_000);
+
+                Thread connection = new Thread(() -> {
+                    try (Socket owned = socket) {
+                        handle(owned, rangeRequests, fullRequests);
+                    } catch (Throwable ignored) {
+                        // The original full-body connection may be intentionally
+                        // abandoned after a successful segmented transfer.
+                    }
+                }, "sysdl-loopback-conn");
+                connection.start();
             } catch (java.net.SocketTimeoutException ignored) {
-                // Periodically re-check stop/deadline.
+                // Re-check stop/deadline.
             } catch (Throwable ignored) {
                 if (!stop.get()) {
-                    // Keep the probe server alive for another request.
+                    // Keep serving later Range workers.
                 }
             }
         }
     }
 
-    private static void handle(Socket socket) throws Exception {
+    private static void handle(
+            Socket socket,
+            AtomicInteger rangeRequests,
+            AtomicInteger fullRequests) throws Exception {
         BufferedReader reader = new BufferedReader(
-                new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+                new InputStreamReader(
+                        socket.getInputStream(),
+                        StandardCharsets.US_ASCII));
 
         String requestLine = reader.readLine();
         if (requestLine == null || requestLine.isBlank()) {
@@ -209,7 +258,9 @@ final class DownloadSelfTest {
         long end = TEST_BYTES - 1L;
         boolean partial = false;
 
-        if (range != null && range.toLowerCase(Locale.ROOT).startsWith("bytes=")) {
+        if (range != null
+                && range.toLowerCase(Locale.ROOT).startsWith("bytes=")) {
+            rangeRequests.incrementAndGet();
             String spec = range.substring(6).trim();
             int dash = spec.indexOf('-');
             if (dash >= 0) {
@@ -219,12 +270,16 @@ final class DownloadSelfTest {
                     start = Long.parseLong(startText);
                 }
                 if (!endText.isEmpty()) {
-                    end = Math.min(Long.parseLong(endText), TEST_BYTES - 1L);
+                    end = Math.min(
+                            Long.parseLong(endText),
+                            TEST_BYTES - 1L);
                 }
                 if (start <= end && start < TEST_BYTES) {
                     partial = true;
                 }
             }
+        } else {
+            fullRequests.incrementAndGet();
         }
 
         if (start >= TEST_BYTES || end < start) {
@@ -234,7 +289,9 @@ final class DownloadSelfTest {
 
         long length = end - start + 1L;
         BufferedWriter headers = new BufferedWriter(
-                new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.US_ASCII));
+                new OutputStreamWriter(
+                        socket.getOutputStream(),
+                        StandardCharsets.US_ASCII));
 
         headers.write(partial
                 ? "HTTP/1.1 206 Partial Content\r\n"
@@ -242,18 +299,19 @@ final class DownloadSelfTest {
         headers.write("Content-Type: application/octet-stream\r\n");
         headers.write("Content-Length: " + length + "\r\n");
         headers.write("Accept-Ranges: bytes\r\n");
-        headers.write("ETag: \"sysdl-loopback-v1\"\r\n");
+        headers.write("ETag: \"sysdl-loopback-v2\"\r\n");
         headers.write("Last-Modified: Sat, 26 Sep 2026 00:00:00 GMT\r\n");
         headers.write("Content-Encoding: identity\r\n");
         if (partial) {
-            headers.write("Content-Range: bytes " + start + "-" + end
-                    + "/" + TEST_BYTES + "\r\n");
+            headers.write(
+                    "Content-Range: bytes "
+                            + start + "-" + end
+                            + "/" + TEST_BYTES + "\r\n");
         }
         headers.write("Connection: close\r\n");
         headers.write("\r\n");
         headers.flush();
 
-        // HEAD-like requests should not receive a body.
         if (requestLine.startsWith("HEAD ")) {
             return;
         }
@@ -261,7 +319,7 @@ final class DownloadSelfTest {
         OutputStream out = socket.getOutputStream();
         long remaining = length;
         while (remaining > 0L) {
-            int count = (int) Math.min(BLOCK.length, remaining);
+            int count = (int) Math.min((long) BLOCK.length, remaining);
             out.write(BLOCK, 0, count);
             remaining -= count;
         }
@@ -270,7 +328,9 @@ final class DownloadSelfTest {
 
     private static void write416(Socket socket) throws Exception {
         BufferedWriter headers = new BufferedWriter(
-                new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.US_ASCII));
+                new OutputStreamWriter(
+                        socket.getOutputStream(),
+                        StandardCharsets.US_ASCII));
         headers.write("HTTP/1.1 416 Range Not Satisfiable\r\n");
         headers.write("Content-Range: bytes */" + TEST_BYTES + "\r\n");
         headers.write("Content-Length: 0\r\n");
