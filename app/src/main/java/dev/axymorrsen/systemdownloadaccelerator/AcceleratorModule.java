@@ -1,5 +1,6 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
+import android.content.Context;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
@@ -270,7 +271,35 @@ public final class AcceleratorModule extends XposedModule {
             Class<?> downloadThread =
                     classLoader.loadClass("com.android.providers.downloads.DownloadThread");
 
+            /*
+             * ART may inline private transferData() into executeDownload().
+             * libxposed explicitly requires deoptimizing the caller when a
+             * hooked callee may have been inlined. Deoptimize all execution
+             * entry/caller methods before installing transfer hooks.
+             */
+            int deoptimized = 0;
+            int deoptFailed = 0;
+            for (Method method : downloadThread.getDeclaredMethods()) {
+                if (!"executeDownload".equals(method.getName())
+                        && !"run".equals(method.getName())) {
+                    continue;
+                }
+                method.setAccessible(true);
+                try {
+                    if (deoptimize(method)) {
+                        deoptimized++;
+                    } else {
+                        deoptFailed++;
+                    }
+                } catch (Throwable t) {
+                    deoptFailed++;
+                    emit(Log.WARN,
+                            "deoptimize failed for " + method.toGenericString(), t);
+                }
+            }
+
             int count = 0;
+            int transferHooks = 0;
             for (Method method : downloadThread.getDeclaredMethods()) {
                 if (!PROVIDER_METHODS.contains(method.getName())) {
                     continue;
@@ -278,10 +307,16 @@ public final class AcceleratorModule extends XposedModule {
                 method.setAccessible(true);
                 installProviderProbe(method);
                 count++;
+                if ("transferData".equals(method.getName())) {
+                    transferHooks++;
+                }
             }
 
             providerHookCount = count;
-            emit(Log.INFO, "provider hooks installed=" + count);
+            emit(Log.INFO, "provider hooks installed=" + count
+                    + " transferHooks=" + transferHooks
+                    + " deoptimized=" + deoptimized
+                    + " deoptFailed=" + deoptFailed);
             return count;
         } catch (Throwable t) {
             providerInstalled.set(false);
@@ -311,18 +346,40 @@ public final class AcceleratorModule extends XposedModule {
 
                     if (transferCandidate) {
                         try {
+                            Object[] args = chain.getArgs();
+                            Context targetContext = resolveTargetContext(chain.getThisObject());
+
+                            StringBuilder argTypes = new StringBuilder();
                             HttpURLConnection connection = null;
-                            for (Object arg : chain.getArgs()) {
+                            for (int i = 0; i < args.length; i++) {
+                                Object arg = args[i];
+                                if (i > 0) {
+                                    argTypes.append(", ");
+                                }
+                                argTypes.append(arg == null
+                                        ? "null"
+                                        : arg.getClass().getName());
                                 if (arg instanceof HttpURLConnection) {
                                     connection = (HttpURLConnection) arg;
-                                    break;
                                 }
                             }
 
-                            if (connection != null
-                                    && SegmentedTransfer.tryAccelerate(
-                                            chain.getThisObject(),
-                                            connection)) {
+                            String signature = method.toGenericString();
+                            EngineTelemetry.emit(
+                                    targetContext,
+                                    "TRANSFER_ENTRY",
+                                    signature + " args=[" + argTypes + "]");
+                            emit(Log.INFO, "transferData entered signature="
+                                    + signature + " args=[" + argTypes + "]");
+
+                            if (connection == null) {
+                                EngineTelemetry.emit(
+                                        targetContext,
+                                        "NO_CONNECTION_ARG",
+                                        signature);
+                            } else if (SegmentedTransfer.tryAccelerate(
+                                    chain.getThisObject(),
+                                    connection)) {
                                 emit(Log.INFO, "transferData handled by segmented engine");
                                 return null;
                             }
@@ -344,6 +401,27 @@ public final class AcceleratorModule extends XposedModule {
                         }
                     }
                 });
+    }
+
+    private Context resolveTargetContext(Object thread) {
+        if (thread == null) {
+            return null;
+        }
+        Class<?> cursor = thread.getClass();
+        while (cursor != null) {
+            try {
+                java.lang.reflect.Field field = cursor.getDeclaredField("mContext");
+                field.setAccessible(true);
+                Object value = field.get(thread);
+                return value instanceof Context ? (Context) value : null;
+            } catch (NoSuchFieldException ignored) {
+                cursor = cursor.getSuperclass();
+            } catch (Throwable t) {
+                emit(Log.DEBUG, "unable to resolve target context", t);
+                return null;
+            }
+        }
+        return null;
     }
 
     private void unhookUnknownOldHandles(HotReloadedParam param) {

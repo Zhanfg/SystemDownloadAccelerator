@@ -22,6 +22,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -59,6 +60,7 @@ public final class MainActivity extends Activity {
     private TextView engineDiag;
     private Button refreshButton;
     private boolean engineReceiverRegistered;
+    private final ArrayDeque<String> engineEvents = new ArrayDeque<>();
 
     private final BroadcastReceiver engineReceiver = new BroadcastReceiver() {
         @Override
@@ -74,10 +76,23 @@ public final class MainActivity extends Activity {
             if (phase == null) phase = "";
             if (detail == null) detail = "";
 
-            engineDiag.setText("引擎：" + phase + (detail.isBlank() ? "" : " · " + detail));
+            String event = phase + (detail.isBlank() ? "" : " · " + detail);
+            engineEvents.addLast(event);
+            while (engineEvents.size() > 8) {
+                engineEvents.removeFirst();
+            }
+
+            StringBuilder history = new StringBuilder("引擎事件：");
+            for (String item : engineEvents) {
+                history.append("\n").append(item);
+            }
+            engineDiag.setText(history.toString());
+
             if ("SUCCESS".equals(phase) || "RANGE_OK".equals(phase)) {
                 engineDiag.setTextColor(GREEN);
-            } else if ("ERROR".equals(phase) || "FALLBACK".equals(phase)) {
+            } else if ("ERROR".equals(phase)
+                    || "FALLBACK".equals(phase)
+                    || "NO_CONNECTION_ARG".equals(phase)) {
                 engineDiag.setTextColor(RED);
             } else {
                 engineDiag.setTextColor(AMBER);
@@ -262,7 +277,8 @@ public final class MainActivity extends Activity {
         selfTestButton.setText("自检运行中…");
         selfTestStatus.setText("正在准备本地 DownloadManager 测试");
         selfTestStatus.setTextColor(AMBER);
-        engineDiag.setText("引擎：等待 transferData 拦截");
+        engineEvents.clear();
+        engineDiag.setText("引擎事件：\n等待 transferData 拦截");
         engineDiag.setTextColor(MUTED);
 
         DownloadSelfTest.run(this, (message, terminal, success) ->
