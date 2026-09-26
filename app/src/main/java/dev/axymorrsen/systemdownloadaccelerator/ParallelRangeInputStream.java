@@ -62,6 +62,10 @@ final class ParallelRangeInputStream extends InputStream {
     private static final long MAX_BUFFERED_BYTES = 128L * 1024L * 1024L;
     private static final long MIN_HEAD_RESERVE_BYTES = 8L * 1024L * 1024L;
     private static final long MAX_HEAD_RESERVE_BYTES = 64L * 1024L * 1024L;
+    private static final long MIN_CONTROLLER_DRAIN_BYTES = 16L * 1024L * 1024L;
+    private static final double MIN_CONTROLLER_DRAIN_BPS = 512.0 * 1024.0;
+    private static final int MIN_CONTROLLER_READY_SAMPLES = 2;
+    private static final long CONSUMER_STALL_TIMEOUT_MS = 60_000L;
 
     private static final class PartState {
         final RangePart part;
@@ -346,8 +350,13 @@ final class ParallelRangeInputStream extends InputStream {
         long previousBytes = totalDownloaded.get();
         long previousConsumed = totalConsumed.get();
         long previousNs = System.nanoTime();
+        long lastDrainProgressNs = previousNs;
         int sampleIndex = 0;
+        int readyDrainSamples = 0;
+        boolean controllerReady =
+                initialWorkers >= maxWorkers;
         boolean finalHoldReported = false;
+        boolean warmupReported = false;
 
         while (!cancelled && !closed) {
             try {
@@ -373,16 +382,87 @@ final class ParallelRangeInputStream extends InputStream {
                     deltaConsumed * 1_000_000_000.0 / deltaNs;
             long remaining =
                     Math.max(0L, sessionLength - bytes);
+            long bufferedBytes =
+                    Math.max(0L, bytes - consumed);
+
+            if (deltaConsumed > 0L) {
+                lastDrainProgressNs = nowNs;
+            } else if (bufferedBytes >= MIN_HEAD_RESERVE_BYTES
+                    && TimeUnit.NANOSECONDS.toMillis(
+                            nowNs - lastDrainProgressNs)
+                    >= CONSUMER_STALL_TIMEOUT_MS) {
+                EngineTelemetry.emit(
+                        metadata.context,
+                        "STALL_ABORT",
+                        "bufferedMiB=" + formatMiB(bufferedBytes)
+                                + " noDrainMs="
+                                + TimeUnit.NANOSECONDS.toMillis(
+                                        nowNs - lastDrainProgressNs)
+                                + " workers="
+                                + activeWorkers.get()
+                                + " target="
+                                + controller.workers()
+                                + "/" + maxWorkers);
+                abortStalledConsumer();
+                return;
+            }
 
             double deliveredBps =
                     drainBytesPerSecond > 0.0
                             ? Math.min(bytesPerSecond, drainBytesPerSecond)
-                            : bytesPerSecond;
+                            : 0.0;
+
+            if (!controllerReady) {
+                long readyBytes = Math.min(
+                        MIN_CONTROLLER_DRAIN_BYTES,
+                        Math.max(
+                                4L * 1024L * 1024L,
+                                averagePartBytes * 2L));
+
+                if (consumed >= readyBytes
+                        && drainBytesPerSecond
+                        >= MIN_CONTROLLER_DRAIN_BPS) {
+                    readyDrainSamples++;
+                } else {
+                    readyDrainSamples = 0;
+                }
+
+                if (readyDrainSamples
+                        >= MIN_CONTROLLER_READY_SAMPLES) {
+                    controllerReady = true;
+                    warmupReported = false;
+                    EngineTelemetry.emit(
+                            metadata.context,
+                            "ADAPT_READY",
+                            "consumedMiB=" + formatMiB(consumed)
+                                    + " drainMiBs="
+                                    + formatMiBPerSecond(
+                                            drainBytesPerSecond)
+                                    + " workers="
+                                    + controller.workers()
+                                    + "/" + maxWorkers);
+                } else if (!warmupReported
+                        && sampleIndex >= 1) {
+                    warmupReported = true;
+                    EngineTelemetry.emit(
+                            metadata.context,
+                            "ADAPT_WARMUP",
+                            "waitingForNativeDrain consumedMiB="
+                                    + formatMiB(consumed)
+                                    + " drainMiBs="
+                                    + formatMiBPerSecond(
+                                            drainBytesPerSecond)
+                                    + " requiredSamples="
+                                    + MIN_CONTROLLER_READY_SAMPLES);
+                }
+            }
 
             AdaptiveConcurrencyController.Decision decision =
-                    controller.sample(
-                            deliveredBps,
-                            remaining);
+                    controllerReady
+                            ? controller.sample(
+                                    deliveredBps,
+                                    remaining)
+                            : null;
 
             sampleIndex++;
             if (sampleIndex % 4 == 0) {
@@ -394,8 +474,7 @@ final class ParallelRangeInputStream extends InputStream {
                                 + " drainMiBs="
                                 + formatMiBPerSecond(drainBytesPerSecond)
                                 + " bufferedMiB="
-                                + formatMiB(
-                                        Math.max(0L, bytes - consumed))
+                                + formatMiB(bufferedBytes)
                                 + " headMiB="
                                 + formatMiB(currentHeadUnreadBytes())
                                 + " futureMiB="
@@ -403,10 +482,13 @@ final class ParallelRangeInputStream extends InputStream {
                                 + " workers="
                                 + activeWorkers.get()
                                 + "->" + controller.workers()
-                                + "/" + maxWorkers);
+                                + "/" + maxWorkers
+                                + " controllerReady="
+                                + controllerReady);
             }
 
-            if (decision.action
+            if (decision != null
+                    && decision.action
                     == AdaptiveConcurrencyController.Action.RAMP) {
                 startWorkers(decision.workers);
                 finalHoldReported = false;
@@ -419,9 +501,12 @@ final class ParallelRangeInputStream extends InputStream {
                                 + formatMiBPerSecond(deliveredBps)
                                 + " netMiBs="
                                 + formatMiBPerSecond(bytesPerSecond)
+                                + " drainMiBs="
+                                + formatMiBPerSecond(drainBytesPerSecond)
                                 + " remainingMiB="
                                 + formatMiB(remaining));
-            } else if (decision.action
+            } else if (decision != null
+                    && decision.action
                     == AdaptiveConcurrencyController.Action.ROLLBACK) {
                 finalHoldReported = true;
                 synchronized (schedulerLock) {
@@ -438,28 +523,37 @@ final class ParallelRangeInputStream extends InputStream {
                                 + formatRatio(decision.gainRatio)
                                 + " reason="
                                 + decision.reason);
-            } else if (decision.action
+            } else if (decision != null
+                    && decision.action
                     == AdaptiveConcurrencyController.Action.HOLD) {
                 if (!finalHoldReported
                         && (decision.reason.contains("gain")
                         || decision.reason.contains("remaining")
-                        || decision.reason.contains("per-worker"))) {
+                        || decision.reason.contains("per-worker")
+                        || decision.reason.contains("final"))) {
                     finalHoldReported = true;
                     EngineTelemetry.emit(
                             metadata.context,
                             "ADAPT_HOLD",
                             "workers=" + decision.workers
                                     + "/" + maxWorkers
-                                    + " speedMiBs="
+                                    + " deliveredMiBs="
+                                    + formatMiBPerSecond(
+                                            deliveredBps)
+                                    + " netMiBs="
                                     + formatMiBPerSecond(
                                             bytesPerSecond)
+                                    + " drainMiBs="
+                                    + formatMiBPerSecond(
+                                            drainBytesPerSecond)
                                     + " gain="
                                     + formatRatio(
                                             decision.gainRatio)
                                     + " reason="
                                     + decision.reason);
                 }
-            } else if (decision.action
+            } else if (decision != null
+                    && decision.action
                     == AdaptiveConcurrencyController.Action.CEILING) {
                 if (!finalHoldReported) {
                     finalHoldReported = true;
@@ -467,9 +561,15 @@ final class ParallelRangeInputStream extends InputStream {
                             metadata.context,
                             "ADAPT_MAX",
                             "workers=" + decision.workers
-                                    + " speedMiBs="
+                                    + " deliveredMiBs="
                                     + formatMiBPerSecond(
-                                            bytesPerSecond));
+                                            deliveredBps)
+                                    + " netMiBs="
+                                    + formatMiBPerSecond(
+                                            bytesPerSecond)
+                                    + " drainMiBs="
+                                    + formatMiBPerSecond(
+                                            drainBytesPerSecond));
                 }
             }
 
@@ -477,6 +577,29 @@ final class ParallelRangeInputStream extends InputStream {
             previousConsumed = consumed;
             previousNs = nowNs;
         }
+    }
+
+    private void abortStalledConsumer() {
+        cancelled = true;
+
+        synchronized (schedulerLock) {
+            schedulerLock.notifyAll();
+        }
+        for (PartState state : states) {
+            synchronized (state.lock) {
+                state.lock.notifyAll();
+            }
+        }
+
+        pool.shutdownNow();
+        try {
+            pool.awaitTermination(1500L, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        closeCurrentReader();
+        cleanupFiles();
     }
 
     private void workerLoop() {

@@ -227,3 +227,8 @@ DownloadManager action will start a fresh provider process.
 
 This avoids relying on loadedVersionCode alone when a framework reports a
 target as up to date but the injected runtime still belongs to an older build.
+
+
+### Startup drain warmup
+
+Adaptive concurrency waits for the native DownloadManager consumer to establish a real delivered-throughput baseline before making ramp/hold decisions. Startup zero-drain samples are non-terminal, and post-ramp evaluation waits for three steady delivered samples. A stalled native consumer with buffered range data is reclaimed after a timeout so cancelled OEM DownloadProvider sessions cannot retain reorder-cache workers indefinitely.

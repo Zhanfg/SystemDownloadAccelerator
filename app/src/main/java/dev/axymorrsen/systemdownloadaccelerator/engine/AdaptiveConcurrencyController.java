@@ -3,9 +3,9 @@ package dev.axymorrsen.systemdownloadaccelerator.engine;
 /**
  * Throughput-driven concurrency controller with rollback.
  *
- * Each ramp must prove a real delivered-throughput benefit. If the new worker
- * level does not improve throughput enough, the controller returns to the
- * previous level and stops further ramping for the current transfer.
+ * Startup/drain transients are deliberately non-terminal: a slow or zero
+ * delivered sample cannot permanently disable ramping. Each worker level needs
+ * a stable delivered-throughput baseline before it can ramp or roll back.
  */
 public final class AdaptiveConcurrencyController {
     public enum Action {
@@ -45,6 +45,13 @@ public final class AdaptiveConcurrencyController {
     private static final long MIN_BYTES_PER_NEXT_WORKER =
             4L * 1024L * 1024L;
 
+    /** Require a real steady baseline, not the first drain sample. */
+    private static final int BASELINE_SAMPLES = 3;
+    /** Give a freshly enlarged worker pool time to fill the ordered pipeline. */
+    private static final int POST_RAMP_SAMPLES = 3;
+    /** Do not treat one transient low per-worker sample as terminal. */
+    private static final int LOW_PER_WORKER_SAMPLES = 3;
+
     private final int ceiling;
     private int currentWorkers;
     private int previousWorkers;
@@ -52,6 +59,7 @@ public final class AdaptiveConcurrencyController {
     private double stableBaselineBps;
     private double preRampBaselineBps;
     private int samplesAtLevel;
+    private int lowPerWorkerSamples;
     private boolean evaluatingRamp;
     private boolean stopped;
 
@@ -92,7 +100,7 @@ public final class AdaptiveConcurrencyController {
                     currentWorkers,
                     bps,
                     1.0,
-                    "ramp disabled after rollback/hold");
+                    "ramp disabled after rollback/final hold");
         }
 
         if (currentWorkers >= ceiling
@@ -105,43 +113,59 @@ public final class AdaptiveConcurrencyController {
                     "ceiling reached");
         }
 
+        /*
+         * A zero/very-low delivered sample is common while the native consumer
+         * has not reached the first prefetched range yet. Do not count it as a
+         * baseline and, crucially, do not make it terminal.
+         */
         if (bps < MIN_THROUGHPUT_BPS) {
-            samplesAtLevel++;
-            stableBaselineBps =
-                    smooth(stableBaselineBps, bps);
             return new Decision(
-                    Action.HOLD,
+                    Action.WARMUP,
                     currentWorkers,
                     bps,
                     1.0,
-                    "delivered throughput too low to justify more sockets");
+                    "waiting for delivered pipeline");
         }
 
         if (bps / Math.max(1, currentWorkers)
                 < MIN_PER_WORKER_BPS) {
-            stopped = true;
+            lowPerWorkerSamples++;
+            if (lowPerWorkerSamples < LOW_PER_WORKER_SAMPLES) {
+                return new Decision(
+                        Action.WARMUP,
+                        currentWorkers,
+                        bps,
+                        1.0,
+                        "transient low per-worker delivered throughput");
+            }
+
+            /*
+             * Keep sampling at the same level instead of permanently disabling
+             * adaptation. A VPN/server path can recover later in a long file.
+             */
             return new Decision(
                     Action.HOLD,
                     currentWorkers,
                     bps,
                     1.0,
-                    "per-worker delivered throughput too low");
+                    "sustained per-worker delivered throughput too low");
         }
 
+        lowPerWorkerSamples = 0;
         samplesAtLevel++;
         stableBaselineBps =
                 smooth(stableBaselineBps, bps);
 
         if (evaluatingRamp) {
-            if (samplesAtLevel < 2) {
+            if (samplesAtLevel < POST_RAMP_SAMPLES) {
                 return new Decision(
                         Action.WARMUP,
                         currentWorkers,
                         bps,
                         ratio(
-                                bps,
+                                stableBaselineBps,
                                 preRampBaselineBps),
-                        "collecting post-ramp delivered sample");
+                        "settling post-ramp delivered pipeline");
             }
 
             double gain = ratio(
@@ -163,13 +187,13 @@ public final class AdaptiveConcurrencyController {
                         gain,
                         "post-ramp delivered gain below 10%");
             }
-        } else if (samplesAtLevel < 2) {
+        } else if (samplesAtLevel < BASELINE_SAMPLES) {
             return new Decision(
                     Action.WARMUP,
                     currentWorkers,
                     bps,
                     1.0,
-                    "collecting delivered baseline");
+                    "collecting stable delivered baseline");
         }
 
         int next = Math.min(
@@ -201,6 +225,7 @@ public final class AdaptiveConcurrencyController {
                 Math.max(1.0, stableBaselineBps);
         currentWorkers = next;
         samplesAtLevel = 0;
+        lowPerWorkerSamples = 0;
         stableBaselineBps = 0.0;
         evaluatingRamp = true;
 
@@ -209,7 +234,7 @@ public final class AdaptiveConcurrencyController {
                 currentWorkers,
                 bps,
                 1.0,
-                "delivered throughput still benefits from more concurrency");
+                "stable delivered throughput allows concurrency probe");
     }
 
     private static double smooth(
