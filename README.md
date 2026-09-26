@@ -146,3 +146,20 @@ API 102 hot reload performs an explicit generation handoff:
 
 This prevents a target process from executing old and new interceptor logic at
 the same time after an in-place module update.
+
+
+## Real-network benchmark
+
+The app includes an optional large-file benchmark that uses the real Android
+DownloadManager path.
+
+- paste an HTTP/HTTPS large-file direct URL;
+- current and average throughput update about once per second;
+- ADAPT_INIT/RAMP/HOLD/MAX events show the scheduler's worker decisions;
+- active-network metering is checked before start and metered networks are
+  rejected by default to avoid accidental cellular data usage;
+- the test can be cancelled at any time;
+- DownloadManager records and benchmark files are cleaned up automatically.
+
+The localhost 16 MiB self-test remains the correctness test. It is intentionally
+too small to exercise 32/64-worker scaling.

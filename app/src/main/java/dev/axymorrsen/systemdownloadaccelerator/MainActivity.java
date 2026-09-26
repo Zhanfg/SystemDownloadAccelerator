@@ -14,10 +14,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -58,6 +60,11 @@ public final class MainActivity extends Activity {
     private Button selfTestButton;
     private TextView selfTestStatus;
     private TextView engineDiag;
+    private EditText benchmarkUrl;
+    private TextView benchmarkStatus;
+    private TextView benchmarkEngine;
+    private Button benchmarkButton;
+    private RealDownloadBenchmark.Session benchmarkSession;
     private Button diagnosticButton;
     private TextView diagnosticStatus;
     private Button refreshButton;
@@ -89,6 +96,23 @@ public final class MainActivity extends Activity {
                 history.append("\n").append(item);
             }
             engineDiag.setText(history.toString());
+
+            if (benchmarkEngine != null
+                    && (phase.startsWith("ADAPT_")
+                    || phase.startsWith("BENCH_")
+                    || "PARTS".equals(phase)
+                    || "COMPLETE".equals(phase))) {
+                benchmarkEngine.setText(
+                        phase + (detail.isBlank()
+                                ? ""
+                                : " · " + detail));
+                benchmarkEngine.setTextColor(
+                        "ERROR".equals(phase)
+                                || "BENCH_FAILED".equals(phase)
+                                || "BENCH_ERROR".equals(phase)
+                                ? RED
+                                : AMBER);
+            }
 
             if ("SUCCESS".equals(phase) || "RANGE_OK".equals(phase)) {
                 engineDiag.setTextColor(GREEN);
@@ -130,6 +154,10 @@ public final class MainActivity extends Activity {
             } catch (Throwable ignored) {
             }
             engineReceiverRegistered = false;
+        }
+        if (benchmarkSession != null) {
+            benchmarkSession.cancel();
+            benchmarkSession = null;
         }
         super.onDestroy();
     }
@@ -258,7 +286,12 @@ public final class MainActivity extends Activity {
         testExplain.setLineSpacing(0f, 1.15f);
         testBox.addView(testExplain);
 
-        selfTestStatus = text("尚未运行", 13, MUTED, false);
+        selfTestStatus = text(
+                getSharedPreferences("ui_state", MODE_PRIVATE)
+                        .getString("last_self_test", "尚未运行"),
+                13,
+                MUTED,
+                false);
         LinearLayout.LayoutParams selfStatusLp = wrap();
         selfStatusLp.topMargin = dp(10);
         testBox.addView(selfTestStatus, selfStatusLp);
@@ -279,6 +312,54 @@ public final class MainActivity extends Activity {
         testBox.addView(selfTestButton, selfButtonLp);
 
         root.addView(testBox, matchWrap());
+
+        TextView benchmarkSection = text("大文件性能测试", 16, TEXT, true);
+        LinearLayout.LayoutParams benchmarkSectionLp = wrap();
+        benchmarkSectionLp.topMargin = dp(18);
+        benchmarkSectionLp.bottomMargin = dp(10);
+        root.addView(benchmarkSection, benchmarkSectionLp);
+
+        LinearLayout benchmarkBox = cardContainer();
+        TextView benchmarkExplain = text(
+                "输入真实 HTTP/HTTPS 大文件直链，由系统 DownloadManager 下载并测试动态并发。"
+                        + "会消耗真实网络流量；Android 标记为计费网络时默认拒绝启动。"
+                        + "测试完成或取消后自动清理文件。",
+                13, MUTED, false);
+        benchmarkExplain.setLineSpacing(0f, 1.15f);
+        benchmarkBox.addView(benchmarkExplain);
+
+        benchmarkUrl = new EditText(this);
+        benchmarkUrl.setHint("https://example.com/large-file.bin");
+        benchmarkUrl.setSingleLine(true);
+        benchmarkUrl.setTextSize(14);
+        benchmarkUrl.setInputType(
+                InputType.TYPE_CLASS_TEXT
+                        | InputType.TYPE_TEXT_VARIATION_URI);
+        LinearLayout.LayoutParams benchmarkUrlLp = matchWrap();
+        benchmarkUrlLp.topMargin = dp(10);
+        benchmarkBox.addView(benchmarkUrl, benchmarkUrlLp);
+
+        benchmarkStatus = text("尚未运行真实性能测试", 13, MUTED, false);
+        LinearLayout.LayoutParams benchmarkStatusLp = wrap();
+        benchmarkStatusLp.topMargin = dp(10);
+        benchmarkBox.addView(benchmarkStatus, benchmarkStatusLp);
+
+        benchmarkEngine = text("调度器：等待测试", 12, MUTED, false);
+        benchmarkEngine.setLineSpacing(0f, 1.12f);
+        LinearLayout.LayoutParams benchmarkEngineLp = wrap();
+        benchmarkEngineLp.topMargin = dp(6);
+        benchmarkBox.addView(benchmarkEngine, benchmarkEngineLp);
+
+        benchmarkButton = new Button(this);
+        benchmarkButton.setText("开始大文件性能测试");
+        benchmarkButton.setTextSize(15);
+        benchmarkButton.setAllCaps(false);
+        benchmarkButton.setOnClickListener(v -> toggleBenchmark());
+        LinearLayout.LayoutParams benchmarkButtonLp = matchWrap();
+        benchmarkButtonLp.topMargin = dp(12);
+        benchmarkBox.addView(benchmarkButton, benchmarkButtonLp);
+
+        root.addView(benchmarkBox, matchWrap());
 
         TextView diagSection = text("诊断日志", 16, TEXT, true);
         LinearLayout.LayoutParams diagSectionLp = wrap();
@@ -353,6 +434,10 @@ public final class MainActivity extends Activity {
                             terminal ? (success ? GREEN : RED) : AMBER);
 
                     if (terminal) {
+                        getSharedPreferences("ui_state", MODE_PRIVATE)
+                                .edit()
+                                .putString("last_self_test", message)
+                                .apply();
                         selfTestButton.setEnabled(true);
                         selfTestButton.setText("重新运行下载链路自检");
                         loadPersistedEvents();
@@ -361,6 +446,75 @@ public final class MainActivity extends Activity {
                         mainHandler.postDelayed(this::refresh, 250L);
                     }
                 }));
+    }
+
+    private void toggleBenchmark() {
+        if (benchmarkSession != null
+                && !benchmarkSession.isCancelled()) {
+            benchmarkSession.cancel();
+            benchmarkSession = null;
+            benchmarkButton.setText("开始大文件性能测试");
+            benchmarkStatus.setText("正在取消并清理测试文件…");
+            benchmarkStatus.setTextColor(AMBER);
+            return;
+        }
+
+        String url = benchmarkUrl == null
+                ? ""
+                : benchmarkUrl.getText().toString().trim();
+
+        benchmarkButton.setText("取消性能测试");
+        benchmarkStatus.setText("正在提交真实 DownloadManager 大文件测试…");
+        benchmarkStatus.setTextColor(AMBER);
+        benchmarkEngine.setText("调度器：等待 ADAPT_INIT");
+        benchmarkEngine.setTextColor(MUTED);
+
+        EngineTelemetry.emit(
+                getApplicationContext(),
+                "BENCH_UI_BEGIN",
+                "version=" + BuildConfig.VERSION_CODE);
+
+        benchmarkSession = RealDownloadBenchmark.run(
+                this,
+                url,
+                (message, terminal, success) ->
+                        runOnUiThread(() -> {
+                            benchmarkStatus.setText(message);
+                            benchmarkStatus.setTextColor(
+                                    terminal
+                                            ? (success ? GREEN : RED)
+                                            : AMBER);
+
+                            String latest = latestAdaptiveEvent();
+                            if (latest != null) {
+                                benchmarkEngine.setText(
+                                        "调度器：" + latest);
+                                benchmarkEngine.setTextColor(AMBER);
+                            }
+
+                            if (terminal) {
+                                benchmarkSession = null;
+                                benchmarkButton.setText(
+                                        "重新运行大文件性能测试");
+                                loadPersistedEvents();
+                                refresh();
+                            }
+                        }));
+    }
+
+    private String latestAdaptiveEvent() {
+        java.util.List<String> events =
+                TelemetryProvider.readEvents(
+                        getApplicationContext());
+        for (int i = events.size() - 1; i >= 0; i--) {
+            String event = events.get(i);
+            if (event.startsWith("ADAPT_")
+                    || event.startsWith("PARTS")
+                    || event.startsWith("BENCH_")) {
+                return event;
+            }
+        }
+        return null;
     }
 
     private void generateDiagnosticLog() {
