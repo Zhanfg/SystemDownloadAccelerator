@@ -73,29 +73,73 @@ final class SegmentedTransfer {
         }
 
         Runtime rt = null;
+        Context telemetryContext = null;
         int permits = 0;
         boolean destinationTouched = false;
 
         try {
+            try {
+                telemetryContext = (Context) getField(thread, "mContext");
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "ENTER",
+                        "transferData(HttpURLConnection) intercepted");
+            } catch (Throwable ignored) {
+            }
+
             rt = Runtime.inspect(thread, original);
+            telemetryContext = rt.context;
+            EngineTelemetry.emit(
+                    telemetryContext,
+                    "ELIGIBILITY",
+                    "bytes=" + rt.totalBytes
+                            + " current=" + rt.currentBytes
+                            + " etag=" + (rt.etag == null ? "none" : "strong"));
+
             if (!rt.eligible()) {
                 log("passthrough: " + rt.rejectReason);
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        rt.rejectReason);
                 return false;
             }
 
+            EngineTelemetry.emit(
+                    telemetryContext,
+                    "RANGE_PROBE",
+                    "bytes=0-0");
             RangeProbe.Result probe = probeRange(rt);
             if (!probe.eligible) {
                 log("passthrough: range probe " + probe.reason);
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        "range probe: " + probe.reason);
                 return false;
             }
+            EngineTelemetry.emit(
+                    telemetryContext,
+                    "RANGE_OK",
+                    "total=" + probe.totalBytes
+                            + " validator=" + probe.validatorKind);
             if (probe.totalBytes != rt.totalBytes) {
                 log("passthrough: probe total changed "
                         + probe.totalBytes + " != " + rt.totalBytes);
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        "probe total changed "
+                                + probe.totalBytes + " != " + rt.totalBytes);
                 return false;
             }
             if (probe.validatorKind != RangeProbe.ValidatorKind.STRONG_ETAG
                     || !rt.etag.equals(probe.validator)) {
                 log("passthrough: validator changed during probe");
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        "validator changed during probe");
                 return false;
             }
 
@@ -104,20 +148,43 @@ final class SegmentedTransfer {
             workers = acquireBudget(workers);
             if (workers < 2) {
                 log("passthrough: global connection budget busy");
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        "global connection budget busy");
                 return false;
             }
             permits = workers;
+            EngineTelemetry.emit(
+                    telemetryContext,
+                    "WORKERS",
+                    "workers=" + workers
+                            + " network=" + conditions.networkKind
+                            + " metered=" + conditions.metered
+                            + " thermal=" + conditions.thermalStatus);
 
             List<Segment> segments = PLANNER.plan(rt.totalBytes, workers);
             if (segments.size() < 2) {
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        "segment planner returned " + segments.size());
                 return false;
             }
 
             destinationTouched = prepareDestination(rt);
             if (!destinationTouched) {
                 log("passthrough: destination is not safely seekable");
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        "destination is not safely seekable");
                 return false;
             }
+            EngineTelemetry.emit(
+                    telemetryContext,
+                    "WRITE",
+                    "destination prepared; starting parallel ranges");
 
             log("accelerating bytes=" + rt.totalBytes
                     + " workers=" + workers
@@ -128,15 +195,32 @@ final class SegmentedTransfer {
             if (!success) {
                 rollback(rt);
                 log("segmented transfer failed; native path restored");
+                EngineTelemetry.emit(
+                        telemetryContext,
+                        "FALLBACK",
+                        "parallel transfer failed; native path restored");
                 return false;
             }
 
             finishProgress(rt);
             log("accelerated transfer complete bytes=" + rt.totalBytes
                     + " workers=" + workers);
+            EngineTelemetry.emit(
+                    telemetryContext,
+                    "SUCCESS",
+                    "bytes=" + rt.totalBytes + " workers=" + workers);
             return true;
         } catch (Throwable t) {
-            Log.w(TAG, "segmented path failed closed", unwrap(t));
+            Throwable cause = unwrap(t);
+            Log.w(TAG, "segmented path failed closed", cause);
+            EngineTelemetry.emit(
+                    telemetryContext,
+                    "ERROR",
+                    cause.getClass().getSimpleName()
+                            + ": "
+                            + (cause.getMessage() == null
+                                    ? "(no message)"
+                                    : cause.getMessage()));
             if (rt != null && destinationTouched) {
                 try {
                     rollback(rt);

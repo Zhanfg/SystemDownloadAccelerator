@@ -1,11 +1,16 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -51,7 +56,34 @@ public final class MainActivity extends Activity {
     private StatusCard systemUiCard;
     private Button selfTestButton;
     private TextView selfTestStatus;
+    private TextView engineDiag;
     private Button refreshButton;
+    private boolean engineReceiverRegistered;
+
+    private final BroadcastReceiver engineReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null
+                    || !EngineTelemetry.ACTION.equals(intent.getAction())
+                    || engineDiag == null) {
+                return;
+            }
+
+            String phase = intent.getStringExtra(EngineTelemetry.EXTRA_PHASE);
+            String detail = intent.getStringExtra(EngineTelemetry.EXTRA_DETAIL);
+            if (phase == null) phase = "";
+            if (detail == null) detail = "";
+
+            engineDiag.setText("引擎：" + phase + (detail.isBlank() ? "" : " · " + detail));
+            if ("SUCCESS".equals(phase) || "RANGE_OK".equals(phase)) {
+                engineDiag.setTextColor(GREEN);
+            } else if ("ERROR".equals(phase) || "FALLBACK".equals(phase)) {
+                engineDiag.setTextColor(RED);
+            } else {
+                engineDiag.setTextColor(AMBER);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle state) {
@@ -60,6 +92,7 @@ public final class MainActivity extends Activity {
         getWindow().setNavigationBarColor(BG);
         setContentView(buildUi());
         ModuleApp.addListener(serviceListener);
+        registerEngineReceiver();
         refresh();
     }
 
@@ -72,7 +105,28 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         ModuleApp.removeListener(serviceListener);
+        if (engineReceiverRegistered) {
+            try {
+                unregisterReceiver(engineReceiver);
+            } catch (Throwable ignored) {
+            }
+            engineReceiverRegistered = false;
+        }
         super.onDestroy();
+    }
+
+    private void registerEngineReceiver() {
+        if (engineReceiverRegistered) {
+            return;
+        }
+
+        IntentFilter filter = new IntentFilter(EngineTelemetry.ACTION);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(engineReceiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(engineReceiver, filter);
+        }
+        engineReceiverRegistered = true;
     }
 
     private View buildUi() {
@@ -164,6 +218,12 @@ public final class MainActivity extends Activity {
         selfStatusLp.topMargin = dp(10);
         testBox.addView(selfTestStatus, selfStatusLp);
 
+        engineDiag = text("引擎：等待测试", 12, MUTED, false);
+        engineDiag.setLineSpacing(0f, 1.12f);
+        LinearLayout.LayoutParams engineLp = wrap();
+        engineLp.topMargin = dp(8);
+        testBox.addView(engineDiag, engineLp);
+
         selfTestButton = new Button(this);
         selfTestButton.setText("运行下载链路自检");
         selfTestButton.setTextSize(15);
@@ -202,6 +262,8 @@ public final class MainActivity extends Activity {
         selfTestButton.setText("自检运行中…");
         selfTestStatus.setText("正在准备本地 DownloadManager 测试");
         selfTestStatus.setTextColor(AMBER);
+        engineDiag.setText("引擎：等待 transferData 拦截");
+        engineDiag.setTextColor(MUTED);
 
         DownloadSelfTest.run(this, (message, terminal, success) ->
                 runOnUiThread(() -> {
