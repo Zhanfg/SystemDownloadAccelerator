@@ -242,6 +242,10 @@ private fun TunePage(
             )
         }
 
+        item {
+            SceneStrategyCard(state.options)
+        }
+
         if (state.options.scene == Scene.Custom) {
             item {
                 AssistChip(
@@ -836,6 +840,10 @@ private fun ReportPage(
         }
         item {
             MetricComparisonCard("最大偏差", result.before.maxDeviationDb, result.after.maxDeviationDb, "dB")
+        }
+
+        item {
+            EqCurveCard(result.plan)
         }
 
         item {
