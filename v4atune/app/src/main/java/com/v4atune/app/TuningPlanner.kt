@@ -208,35 +208,18 @@ object TuningPlanner {
             ))
             put("playbackGainControl", obj(
                 "enable", playbackOn,
-                "strength", when (options.scene) {
-                    Scene.Outdoor -> 1.28
-                    Scene.Night -> 0.92
-                    else -> if (options.target == Target.Loudness) 1.20 else 0.85
-                },
-                "maxGain", when (options.scene) {
-                    Scene.Outdoor -> 2.15
-                    Scene.Night -> 1.40
-                    else -> if (options.target == Target.Loudness) 2.0 else 1.35
-                },
-                "outputThreshold", if (options.scene == Scene.Outdoor) 0.80 else 0.82,
+                "strength", spec.loudness.playbackStrength,
+                "maxGain", spec.loudness.playbackMaxGain,
+                "outputThreshold", spec.loudness.playbackOutputThreshold,
             ))
             put("lufs", obj(
                 "enable", lufsOn,
-                "target", when (options.scene) {
-                    Scene.Outdoor -> -14.0
-                    Scene.Night -> -19.0
-                    Scene.Movie -> -16.0
-                    else -> if (options.target == Target.Loudness) -14.0 else -16.0
-                },
-                "maxGain", when (options.scene) {
-                    Scene.Outdoor -> 4.0
-                    Scene.Night -> 2.0
-                    else -> 3.0
-                },
-                "speed", if (options.scene == Scene.Night) 1 else 0,
+                "target", spec.loudness.lufsTarget,
+                "maxGain", spec.loudness.lufsMaxGain,
+                "speed", spec.loudness.lufsSpeed,
             ))
-            put("fetCompressor", fetJson(fetOn, options.scene))
-            put("multibandCompressor", multibandJson(mbcOn, options.scene))
+            put("fetCompressor", fetJson(fetOn, spec.loudness))
+            put("multibandCompressor", multibandJson(mbcOn, spec.loudness))
             put("ddc", obj("enable", ddcOn, "device", if (ddcOn) "V4ATune_Speaker" else ""))
             put("spectrumExtension", obj(
                 "enable", spectrumOn,
@@ -249,7 +232,7 @@ object TuningPlanner {
                 "bands", arr(eqLevels),
                 "presetId", JSONObject.NULL,
             ))
-            put("dynamicEq", dynamicEqJson(dynamicEqOn, dynPeaks))
+            put("dynamicEq", dynamicEqJson(dynamicEqOn, dynPeaks, spec.dynamicEq))
             put("convolver", obj(
                 "enable", convolverOn,
                 "kernelFile", if (convolverOn) "V4ATune_Speaker.wav" else "",
@@ -257,44 +240,32 @@ object TuningPlanner {
             ))
             put("fieldSurround", obj(
                 "enable", fieldOn,
-                "widening", when (options.scene) {
-                    Scene.Movie -> 1.22
-                    Scene.Game -> 0.90
-                    else -> if (options.target == Target.Spatial) 1.15 else 0.5
-                },
-                "midImage", if (options.scene == Scene.Movie) 1.28 else 1.22,
-                "depth", if (options.scene == Scene.Movie) 380 else 300,
+                "widening", spec.spatial.fieldWidening,
+                "midImage", spec.spatial.fieldMidImage,
+                "depth", spec.spatial.fieldDepth,
             ))
             put("diffSurround", obj(
                 "enable", diffOn,
-                "delay", 2.2,
+                "delay", spec.spatial.diffDelayMs,
                 "reverse", false,
-                "wetDryMix", 0.14,
-                "lpCutoff", 7200,
+                "wetDryMix", spec.spatial.diffMix,
+                "lpCutoff", spec.spatial.diffLowPassHz,
             ))
             put("stereoImager", obj(
                 "enable", imagerOn,
-                "lowWidth", if (options.scene == Scene.Game) 0.88 else 0.92,
-                "midWidth", when (options.scene) {
-                    Scene.Movie -> 1.13
-                    Scene.Game -> 1.08
-                    else -> if (options.target == Target.Spatial) 1.10 else 1.0
-                },
-                "highWidth", when (options.scene) {
-                    Scene.Movie -> 1.20
-                    Scene.Game -> 1.12
-                    else -> if (options.target == Target.Spatial) 1.16 else 1.0
-                },
-                "lowCrossover", if (options.scene == Scene.Game) 260 else 220,
-                "highCrossover", if (options.scene == Scene.Game) 3800 else 4500,
+                "lowWidth", spec.spatial.imagerLowWidth,
+                "midWidth", spec.spatial.imagerMidWidth,
+                "highWidth", spec.spatial.imagerHighWidth,
+                "lowCrossover", spec.spatial.imagerLowCrossoverHz,
+                "highCrossover", spec.spatial.imagerHighCrossoverHz,
             ))
             put("headphoneSurround", obj("enable", headphoneOn, "quality", 2))
             put("reverb", obj(
                 "enable", reverbOn,
-                "roomSize", 0.12,
-                "width", 0.65,
-                "damp", 0.62,
-                "wet", 0.05,
+                "roomSize", spec.spatial.reverbRoomSize,
+                "width", spec.spatial.reverbWidth,
+                "damp", spec.spatial.reverbDamp,
+                "wet", spec.spatial.reverbWet,
                 "dry", 1.0,
             ))
             put("dynamicSystem", obj(
@@ -318,11 +289,11 @@ object TuningPlanner {
                 },
                 "intensity", (
                     0.18 + max(0.0, metrics.lowDeficitDb - 4.0) * 0.025 +
-                        if (options.scene == Scene.Outdoor) 0.05 else 0.0
+                        if (options.effectiveScene == Scene.Outdoor) 0.05 else 0.0
                     ).coerceIn(
                         0.18,
                         when {
-                            options.scene == Scene.Outdoor -> 0.46
+                            options.effectiveScene == Scene.Outdoor -> 0.46
                             options.target == Target.Bass -> 0.50
                             else -> 0.42
                         },
@@ -381,7 +352,8 @@ object TuningPlanner {
         verification: Measurement,
         options: TuneOptions,
     ): Plan {
-        val verifyMetrics = metrics(verification, options.target)
+        val spec = SceneDspProfiles.forScene(options.effectiveScene)
+        val verifyMetrics = metrics(verification, options)
         if (verifyMetrics.responseRmsDb < 1.0) return first
 
         val ref = reference(verification)
@@ -395,7 +367,7 @@ object TuningPlanner {
         val newEq = DoubleArray(first.eqLevels.size) { i ->
             (
                 first.eqLevels[i] +
-                    interpolate(vf, residual, first.eqFrequencies[i]) * 0.6
+                    interpolate(vf, residual, first.eqFrequencies[i]) * spec.fir.refineEqShare
                 ).coerceIn(-8.0, 1.5)
         }.smooth3()
 
@@ -403,8 +375,8 @@ object TuningPlanner {
         profile.getJSONObject("equalizer").put("bands", arr(newEq))
 
         val residualFir = DoubleArray(first.firDb.size) { i ->
-            val correction = interpolate(vf, residual, first.firFrequencies[i]) * 0.4
-            (first.firDb[i] + correction).coerceIn(-4.0, 2.0)
+            val correction = interpolate(vf, residual, first.firFrequencies[i]) * spec.fir.refineFirShare
+            (first.firDb[i] + correction).coerceIn(spec.fir.maxCutDb, spec.fir.maxBoostDb)
         }.smooth3()
 
         val kernel = if (profile.getJSONObject("convolver").getBoolean("enable")) {
