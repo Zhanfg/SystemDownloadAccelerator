@@ -20,14 +20,14 @@ object TuningPlanner {
     private val eq15 = doubleArrayOf(25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0, 1000.0, 1600.0, 2500.0, 4000.0, 6300.0, 10000.0, 16000.0)
     private val eq25 = doubleArrayOf(20.0, 31.5, 40.0, 50.0, 80.0, 100.0, 125.0, 160.0, 250.0, 315.0, 400.0, 500.0, 800.0, 1000.0, 1250.0, 1600.0, 2500.0, 3150.0, 4000.0, 5000.0, 8000.0, 10000.0, 12500.0, 16000.0, 20000.0)
 
-    fun metrics(m: Measurement, target: Target): TuneMetrics {
+    fun metrics(m: Measurement, options: TuneOptions): TuneMetrics {
         val ref = reference(m)
         val useful = m.dense.filter { it.frequency in 125.0..12000.0 && it.snrDb >= 12.0 }
-        val deviations = useful.map { it.levelDb - ref - targetOffset(target, it.frequency) }
+        val deviations = useful.map { it.levelDb - ref - sceneTargetOffset(options, it.frequency) }
         val rms = sqrt(deviations.map { it * it }.average().takeIf { !it.isNaN() } ?: 0.0)
         val maxDev = deviations.maxOfOrNull { abs(it) } ?: 0.0
-        val low = deficit(m, ref, 80.0, 315.0, target)
-        val high = deficit(m, ref, 6300.0, 16000.0, target)
+        val low = deficit(m, ref, 80.0, 315.0, options)
+        val high = deficit(m, ref, 6300.0, 16000.0, options)
         val thd = Acoustics.median(m.distortion.map { it.thd })
         return TuneMetrics(
             responseRmsDb = rms,
@@ -41,7 +41,8 @@ object TuningPlanner {
     }
 
     fun build(m: Measurement, options: TuneOptions): Plan {
-        val metrics = metrics(m, options.target)
+        val spec = SceneDspProfiles.forScene(options.effectiveScene)
+        val metrics = metrics(m, options)
         val decisions = linkedMapOf<Component, Pair<Boolean, String>>()
 
         fun decide(component: Component, auto: Boolean, reason: String): Boolean {
@@ -63,15 +64,15 @@ object TuningPlanner {
         val ddcOn = decide(Component.Ddc, false, "扬声器默认由 IIR/FIR 承担；DDC 仅在显式要求时加入")
         val convolverOn = decide(
             Component.Convolver,
-            options.scene != Scene.Game && metrics.responseRmsDb >= 1.25 && reliable(m),
-            if (options.scene == Scene.Game) "游戏场景优先低延迟，自动策略不启用长 FIR"
-            else "稠密频响存在可稳定修正的残差，使用最小相位 FIR",
+            spec.fir.autoEnable && metrics.responseRmsDb >= spec.fir.minResponseRmsDb && reliable(m),
+            if (!spec.fir.autoEnable) "当前场景的延迟预算禁止自动 FIR"
+            else "稠密频响残差超过场景阈值，使用最小相位 FIR",
         )
         val eqOn = decide(Component.Equalizer, true, "使用驱动原生 31 段 IIR 做宽带校正")
         val dynamicEqOn = decide(
             Component.DynamicEq,
-            peakCandidates(m, options.target).isNotEmpty(),
-            "检测到窄带共振峰，动态抑制比静态深切更稳妥",
+            spec.dynamicEq.autoEnable && peakCandidates(m, options).isNotEmpty(),
+            "检测到超过当前场景阈值的窄带共振峰",
         )
         val psychoOn = decide(
             Component.PsychoBass,
@@ -94,8 +95,16 @@ object TuningPlanner {
             options.target == Target.Vocal && metrics.highDeficitDb >= 1.5,
             "人声目标且高频偏暗",
         )
-        val imagerOn = decide(Component.StereoImager, options.target == Target.Spatial, "空间目标使用分频段宽度控制")
-        val fieldOn = decide(Component.FieldSurround, options.target == Target.Spatial, "空间目标使用轻量场环绕")
+        val imagerOn = decide(
+            Component.StereoImager,
+            options.effectiveScene in setOf(Scene.Music, Scene.Movie, Scene.Game),
+            "当前场景允许分频段声像宽度优化",
+        )
+        val fieldOn = decide(
+            Component.FieldSurround,
+            options.effectiveScene == Scene.Movie,
+            "电影场景允许轻量场环绕",
+        )
         val diffOn = decide(Component.DiffSurround, false, "默认避免额外延迟和梳状干涉")
         val headphoneOn = decide(Component.HeadphoneSurround, false, "当前输出是手机扬声器而非耳机")
         val reverbOn = decide(Component.Reverb, false, "参考音质默认不添加房间染色")
@@ -103,9 +112,21 @@ object TuningPlanner {
         val cureOn = decide(Component.Cure, false, "交叉馈送主要用于耳机")
         val tubeOn = decide(Component.Tube, false, "谐波染色不是参考目标")
         val analogOn = decide(Component.AnalogX, false, "模拟染色不是参考目标")
-        val lufsOn = decide(Component.Lufs, options.target == Target.Loudness, "高响度目标需要稳定感知响度")
-        val playbackOn = decide(Component.PlaybackGain, options.target == Target.Loudness, "高响度目标允许受控 AGC")
-        val mbcOn = decide(Component.MultibandCompressor, options.target == Target.Loudness, "高响度目标用分段压缩减轻全频泵动")
+        val lufsOn = decide(
+            Component.Lufs,
+            options.effectiveScene in setOf(Scene.Voice, Scene.Outdoor, Scene.Night),
+            "当前场景需要稳定感知响度",
+        )
+        val playbackOn = decide(
+            Component.PlaybackGain,
+            options.effectiveScene == Scene.Outdoor,
+            "户外场景允许受控回放增益",
+        )
+        val mbcOn = decide(
+            Component.MultibandCompressor,
+            options.effectiveScene == Scene.Outdoor,
+            "户外场景使用分段压缩提升可听度",
+        )
         val fetOn = decide(Component.FetCompressor, false, "默认保留瞬态；高响度优先使用多段压缩")
 
         val ref = reference(m)
@@ -113,7 +134,7 @@ object TuningPlanner {
         val desired = DoubleArray(m.dense.size) { i ->
             val p = m.dense[i]
             val relative = p.levelDb - ref
-            var correction = targetOffset(options.target, p.frequency) - relative
+            var correction = sceneTargetOffset(options, p.frequency) - relative
             val maxBoost = when {
                 p.frequency < 80.0 -> 0.0
                 p.frequency > 14000.0 -> 0.0
@@ -124,7 +145,7 @@ object TuningPlanner {
             correction.coerceIn(-7.0, maxBoost)
         }.smooth3()
 
-        val ddc = if (ddcOn) designDdc(m, options.target) else null
+        val ddc = if (ddcOn) designDdc(m, options) else null
         val ddcDb = if (ddc != null) {
             DoubleArray(denseFreqs.size) { i -> cascadeDb(ddc.second, denseFreqs[i], 48000.0) }
         } else {
@@ -140,7 +161,7 @@ object TuningPlanner {
         }
         val eqShare = when {
             !eqOn -> 0.0
-            convolverOn -> 0.72
+            convolverOn -> spec.fir.eqShare
             else -> 1.0
         }
         val eqLevels = DoubleArray(eqFreqs.size) { i ->
@@ -152,7 +173,9 @@ object TuningPlanner {
             if (eqOn) interpolate(eqFreqs, eqLevels, denseFreqs[i]) else 0.0
         }
         val firDb = DoubleArray(denseFreqs.size) { i ->
-            if (convolverOn) (afterDdc[i] - eqApprox[i]).coerceIn(-3.5, 2.0) else 0.0
+            if (convolverOn) {
+                (afterDdc[i] - eqApprox[i]).coerceIn(spec.fir.maxCutDb, spec.fir.maxBoostDb)
+            } else 0.0
         }.smooth3()
 
         val kernel = if (convolverOn) {
@@ -164,19 +187,15 @@ object TuningPlanner {
             )
         } else null
 
-        val dynPeaks = if (dynamicEqOn) peakCandidates(m, options.target).take(10) else emptyList()
+        val dynPeaks = if (dynamicEqOn) {
+            peakCandidates(m, options).take(spec.dynamicEq.maxBands)
+        } else emptyList()
         val pan = channelPan(metrics.channelDeltaDb)
-        val sceneHeadroom = when (options.scene) {
-            Scene.Outdoor -> 0.7
-            Scene.Movie -> 0.4
-            Scene.Night -> 0.3
-            else -> 0.0
-        }
         val headroomDb = (
-            1.0 + sceneHeadroom +
-                if (psychoOn || bassOn || spectrumOn || clarityOn) 1.0 else 0.0 +
-                if (fieldOn || diffOn || reverbOn) 0.5 else 0.0
-            ).coerceIn(1.0, 3.5)
+            spec.loudness.baseHeadroomDb +
+                if (psychoOn || bassOn || spectrumOn || clarityOn) 0.6 else 0.0 +
+                if (fieldOn || diffOn || reverbOn) 0.3 else 0.0
+            ).coerceIn(0.8, 3.5)
 
         val profile = JSONObject().apply {
             put("schemaVersion", 2.1)
@@ -370,7 +389,7 @@ object TuningPlanner {
         val residual = DoubleArray(vf.size) { i ->
             val p = verification.dense[i]
             if (p.snrDb < 12.0) 0.0
-            else (targetOffset(options.target, p.frequency) - (p.levelDb - ref)).coerceIn(-1.5, 1.0)
+            else (sceneTargetOffset(options, p.frequency) - (p.levelDb - ref)).coerceIn(-1.5, 1.0)
         }.smooth3()
 
         val newEq = DoubleArray(first.eqLevels.size) { i ->
