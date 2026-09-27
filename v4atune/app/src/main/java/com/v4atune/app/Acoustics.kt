@@ -179,6 +179,7 @@ class SweepCalibrator(private val context: Context) {
     suspend fun measure(
         mode: TestMode,
         verification: Boolean = false,
+        processedPlan: Plan? = null,
         progress: suspend (String) -> Unit = {},
     ): Measurement {
         check(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -192,7 +193,7 @@ class SweepCalibrator(private val context: Context) {
         progress(if (verification) "验证扫频" else "20 Hz–20 kHz 指数扫频")
         val sweep = createSweep(sampleRate, seconds, -20.0)
         val playback = withMarker(sampleRate, sweep, -13.0)
-        val recorded = playRecord(sampleRate, playback)
+        val recorded = playRecord(sampleRate, playback, processedPlan = processedPlan)
 
         val noiseCount = (sampleRate * preRecordSeconds * 0.75).roundToInt()
         val noiseDb = Acoustics.rmsDb(recorded, 0, noiseCount)
@@ -226,15 +227,19 @@ class SweepCalibrator(private val context: Context) {
         }
 
         progress("失真探针 · 125 / 250 Hz · 1 kHz · 5 / 8 kHz")
-        val distortion = distortionStress(sampleRate)
+        val distortion = distortionStress(sampleRate, processedPlan)
 
         progress("左右声道平衡")
-        val left = toneProbe(sampleRate, 1000.0, -18.0, left = true, right = false)
-        val right = toneProbe(sampleRate, 1000.0, -18.0, left = false, right = true)
+        val left = toneProbe(
+            sampleRate, 1000.0, -18.0, left = true, right = false, processedPlan = processedPlan,
+        )
+        val right = toneProbe(
+            sampleRate, 1000.0, -18.0, left = false, right = true, processedPlan = processedPlan,
+        )
 
         progress("动态压缩探针")
-        val medium = toneProbe(sampleRate, 1000.0, -25.0)
-        val loud = toneProbe(sampleRate, 1000.0, -13.0)
+        val medium = toneProbe(sampleRate, 1000.0, -25.0, processedPlan = processedPlan)
+        val loud = toneProbe(sampleRate, 1000.0, -13.0, processedPlan = processedPlan)
         val expectedDelta = 12.0
         val actualDelta = loud.levelDb - medium.levelDb
         val compressionDb = max(0.0, expectedDelta - actualDelta)
@@ -252,9 +257,12 @@ class SweepCalibrator(private val context: Context) {
         )
     }
 
-    fun distortionStress(sampleRate: Int): List<DistortionProbe> =
+    fun distortionStress(
+        sampleRate: Int,
+        processedPlan: Plan? = null,
+    ): List<DistortionProbe> =
         listOf(125.0, 250.0, 1000.0, 5000.0, 8000.0).map { f ->
-            val probe = toneProbe(sampleRate, f, -10.0)
+            val probe = toneProbe(sampleRate, f, -10.0, processedPlan = processedPlan)
             DistortionProbe(f, probe.thd, probe.peak)
         }
 
@@ -266,6 +274,7 @@ class SweepCalibrator(private val context: Context) {
         dbfs: Double,
         left: Boolean = true,
         right: Boolean = true,
+        processedPlan: Plan? = null,
     ): Probe {
         val seconds = 0.42
         val mono = FloatArray((sampleRate * seconds).roundToInt()) { i ->
@@ -273,7 +282,12 @@ class SweepCalibrator(private val context: Context) {
             (10.0.pow(dbfs / 20.0) * fade.coerceIn(0.0, 1.0) * sin(2.0 * PI * frequency * i / sampleRate)).toFloat()
         }
         val stereo = stereo(mono, left, right)
-        val recorded = playRecord(sampleRate, stereo, 0.12)
+        val recorded = playRecord(
+            sampleRate,
+            stereo,
+            preroll = 0.12,
+            processedPlan = processedPlan,
+        )
         val start = (sampleRate * 0.16).roundToInt()
         val count = min(recorded.size - start, (sampleRate * 0.28).roundToInt())
         val amp = Acoustics.goertzel(recorded, sampleRate, frequency, start, count)
@@ -326,7 +340,12 @@ class SweepCalibrator(private val context: Context) {
         return out
     }
 
-    private fun playRecord(sampleRate: Int, stereoPcm: ShortArray, preroll: Double = preRecordSeconds): ShortArray {
+    private fun playRecord(
+        sampleRate: Int,
+        stereoPcm: ShortArray,
+        preroll: Double = preRecordSeconds,
+        processedPlan: Plan? = null,
+    ): ShortArray {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             throw SecurityException("Microphone permission was revoked before AudioRecord initialization")
         }
@@ -370,6 +389,11 @@ class SweepCalibrator(private val context: Context) {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
+        val sessionEffect = processedPlan?.let { plan ->
+            ViperSessionEffect.create(track.audioSessionId).also { it.apply(plan) }
+        }
+        val processedBefore = sessionEffect?.processedFrames()
+
         val captured = ShortArray(samples)
         record.startRecording()
         val reader = Thread {
@@ -393,7 +417,15 @@ class SweepCalibrator(private val context: Context) {
         track.stop()
         reader.join(3000)
 
+        val processedAfter = sessionEffect?.processedFrames()
+        if (sessionEffect != null && processedBefore != null && processedAfter != null) {
+            check(processedAfter > processedBefore) {
+                "ViPER exact-session verifier did not process the calibration AudioTrack"
+            }
+        }
+
         runCatching { record.stop() }
+        sessionEffect?.close()
         track.release()
         record.release()
         agc?.release()
