@@ -312,9 +312,9 @@ private fun TunePage(
 
         item {
             Text(
-                "测量链：RAW 基线先释放 ViPER AudioEffect，确认 processedFrames 不增长后再测；" +
-                    "随后写入校准结果，并严格沿用你现有的 Global / Per-App / 排除应用路由做二次验证。" +
-                    "V4ATune 不修改 Global Mode、主开关或自动启动。",
+                "测量链：RAW 基线先释放全部 ViPER AudioEffect；PROCESSED 验证则只给当前检测 AudioTrack 的" +
+                    " session 临时挂一个 ViPER effect，验证结束立即释放。整个测量过程不依赖 Global / Per-App 路由；" +
+                    "最终只写 DSP 参数，并原样保留你的 Global Mode、主开关、自动启动和排除应用设置。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
