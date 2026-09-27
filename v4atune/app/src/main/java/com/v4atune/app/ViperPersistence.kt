@@ -22,6 +22,8 @@ class ViperPersistence(private val context: Context) {
         private const val managerPkg = "com.llsl.viper4android"
         private const val appPrefs = "v4atune"
         private const val lastBackupKey = "last_backup"
+        private const val watchdogMark = "/data/local/tmp/v4atune_calibrating"
+        private const val watchdogLog = "/data/local/tmp/v4atune_watchdog.log"
     }
 
     data class Paths(
@@ -44,8 +46,25 @@ class ViperPersistence(private val context: Context) {
     suspend fun beginRawBypass() = withContext(Dispatchers.IO) {
         val paths = locate()
         backup(paths)
+        armRecoveryWatchdog()
         stopManager()
+        heartbeatRecovery()
         delay(450)
+    }
+
+    suspend fun heartbeatRecovery() = withContext(Dispatchers.IO) {
+        val r = RootShell.exec(
+            "if [ -f " + RootShell.quote(watchdogMark) + " ]; then " +
+                "date +%s > " + RootShell.quote(watchdogMark) + "; fi",
+        )
+        check(r.ok) { "校准恢复心跳写入失败: " + r.output }
+    }
+
+    suspend fun ensureRecoveryActive() = withContext(Dispatchers.IO) {
+        val r = RootShell.exec("test -f " + RootShell.quote(watchdogMark) + " && echo armed")
+        check(r.output.contains("armed")) {
+            "校准恢复 watchdog 已触发；ViPER 管理器已自动恢复，本轮校准已终止。"
+        }
     }
 
     /**
@@ -329,19 +348,55 @@ class ViperPersistence(private val context: Context) {
         delay(250)
     }
 
+    private suspend fun armRecoveryWatchdog() {
+        val pkg = RootShell.quote(managerPkg)
+        val mark = RootShell.quote(watchdogMark)
+        val log = RootShell.quote(watchdogLog)
+
+        val script =
+            "date +%s > " + mark + "; " +
+                "( while [ -f " + mark + " ]; do " +
+                "sleep 5; " +
+                "now=\$(date +%s); last=\$(cat " + mark + " 2>/dev/null || echo 0); " +
+                "age=\$((now-last)); " +
+                "if [ \$age -ge 35 ]; then " +
+                "echo \"\$(date '+%F %T') timeout age=\$age; recovering ViPER\" >> " + log + "; " +
+                "am start-foreground-service -n " + pkg +
+                "/.service.ViperService -a com.llsl.viper4android.service.START >/dev/null 2>&1; " +
+                "sleep 2; " +
+                "pidof " + pkg + " >/dev/null 2>&1 || monkey -p " + pkg +
+                " 1 >/dev/null 2>&1; " +
+                "rm -f " + mark + "; exit 0; fi; done ) " +
+                ">/dev/null 2>&1 &"
+
+        val r = RootShell.exec(script)
+        check(r.ok) { "无法启动 ViPER 校准恢复 watchdog: " + r.output }
+    }
+
+    private suspend fun disarmRecoveryWatchdog() {
+        RootShell.exec("rm -f " + RootShell.quote(watchdogMark))
+    }
+
     private suspend fun launchManager() {
         val service = RootShell.exec(
             "am start-foreground-service -n " + managerPkg +
                 "/.service.ViperService -a " +
                 "com.llsl.viper4android.service.START >/dev/null 2>&1",
         )
-        if (!service.ok) {
+        delay(700)
+
+        var alive = RootShell.exec("pidof " + RootShell.quote(managerPkg)).output.isNotBlank()
+        if (!service.ok || !alive) {
             RootShell.exec(
                 "am start -n " + managerPkg + "/.ui.MainActivity >/dev/null 2>&1 || " +
                     "monkey -p " + managerPkg + " 1 >/dev/null 2>&1",
             )
+            delay(900)
+            alive = RootShell.exec("pidof " + RootShell.quote(managerPkg)).output.isNotBlank()
         }
-        delay(900)
+
+        check(alive) { "ViPER 管理器恢复失败：进程没有重新启动" }
+        disarmRecoveryWatchdog()
     }
 }
 
