@@ -1,3 +1,4 @@
+# Exact-session verifier: RAW bypass + per-AudioTrack ViPER validation
 name: Build V4ATune Kotlin APK
 
 concurrency:
