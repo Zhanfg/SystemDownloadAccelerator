@@ -43,9 +43,16 @@ class AutoTuneEngine(private val context: Context) {
         val out = File(context.getExternalFilesDir(null), "runs/" + System.currentTimeMillis())
         out.mkdirs()
 
+        val persistence = ViperPersistence(context)
+        var rawBypassActive = false
+        var staged = false
+
         try {
-            progress("写入无染色测量基线", 0.08f)
-            ViperControl.apply(ProfileCodec.neutralCommands())
+            progress("RAW 旁路 · 释放 ViPER AudioEffect", 0.06f)
+            persistence.beginRawBypass()
+            rawBypassActive = true
+
+            progress("原始链路测量 · 不经过 ViPER", 0.08f)
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, testVolume, 0)
             delay(250)
 
@@ -66,19 +73,33 @@ class AutoTuneEngine(private val context: Context) {
             progress("计算 31 段 IIR / FIR / 动态参数", 0.48f)
             var plan = TuningPlanner.build(first, options)
 
-            progress("写入第一轮完整 DSP", 0.58f)
+            progress("写入第一轮 DSP · 保留原有路由模式", 0.56f)
+            persistence.sync(plan)
+            staged = true
+            rawBypassActive = false
+            delay(500)
             applyPlan(plan)
-            delay(350)
+            delay(250)
 
-            progress("第二轮短扫频验证", 0.70f)
+            val framesBeforeVerify = ViperControl.status()?.processedFrames ?: 0L
+
+            progress("第二轮短扫频验证 · 按现有 ViPER 路由", 0.70f)
             val verify = calibrator.measure(options.mode, true) {
                 progress(it, 0.70f)
             }
 
+            val framesAfterVerify = ViperControl.status()?.processedFrames ?: framesBeforeVerify
+            check(framesAfterVerify > framesBeforeVerify) {
+                "验证音频没有经过 ViPER。可能是主开关关闭、V4ATune 在排除列表，或当前 Per-App 路由未捕获该会话；" +
+                    "V4ATune 不会为此强制开启 Global Mode。"
+            }
+
             progress("根据残差精修", 0.84f)
             plan = TuningPlanner.refine(plan, verify, options)
+            persistence.stage(plan)
+            delay(350)
             applyPlan(plan)
-            delay(300)
+            delay(200)
 
             progress("破音保护 · THD / 峰值压力测试", 0.88f)
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, stressVolume, 0)
@@ -95,8 +116,10 @@ class AutoTuneEngine(private val context: Context) {
 
             if (safetyAdjusted) {
                 plan = safePlan
+                persistence.stage(plan)
+                delay(300)
                 applyPlan(plan)
-                delay(250)
+                delay(200)
                 postStress = calibrator.distortionStress(first.sampleRate)
 
                 // A second bounded pass handles cases where acoustic speaker breakup
@@ -111,8 +134,10 @@ class AutoTuneEngine(private val context: Context) {
                     !safePlan.eqLevels.contentEquals(plan.eqLevels)
                 ) {
                     plan = safePlan
+                    persistence.stage(plan)
+                    delay(300)
                     applyPlan(plan)
-                    delay(250)
+                    delay(200)
                     postStress = calibrator.distortionStress(first.sampleRate)
                 }
             }
@@ -146,7 +171,7 @@ class AutoTuneEngine(private val context: Context) {
                 safetyAdjusted,
             )
             val persistenceOk = try {
-                ViperPersistence(context).sync(plan)
+                persistence.stage(plan)
                 delay(250)
                 applyPlan(plan)
                 driverAfter = ViperControl.status() ?: driverAfter
@@ -168,6 +193,13 @@ class AutoTuneEngine(private val context: Context) {
                 distortionAfter = postStress,
                 safetyAdjusted = safetyAdjusted,
             )
+        } catch (t: Throwable) {
+            if (staged) {
+                runCatching { persistence.restoreLast() }
+            } else if (rawBypassActive) {
+                runCatching { persistence.resumeManager() }
+            }
+            throw t
         } finally {
             runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0) }
         }
