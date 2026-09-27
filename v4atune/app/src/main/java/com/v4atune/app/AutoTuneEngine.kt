@@ -45,7 +45,6 @@ class AutoTuneEngine(private val context: Context) {
 
         val persistence = ViperPersistence(context)
         var rawBypassActive = false
-        var staged = false
 
         try {
             progress("RAW 旁路 · 释放 ViPER AudioEffect", 0.06f)
@@ -82,38 +81,22 @@ class AutoTuneEngine(private val context: Context) {
             progress("计算 31 段 IIR / FIR / 动态参数", 0.48f)
             var plan = TuningPlanner.build(first, options)
 
-            progress("写入第一轮 DSP · 保留原有路由模式", 0.56f)
-            persistence.sync(plan)
-            staged = true
-            rawBypassActive = false
-            delay(500)
-            applyPlan(plan)
-            delay(250)
-
-            val framesBeforeVerify = ViperControl.status()?.processedFrames ?: 0L
-
-            progress("第二轮短扫频验证 · 按现有 ViPER 路由", 0.70f)
-            val verify = calibrator.measure(options.mode, true) {
+            progress("第二轮短扫频 · 仅绑定检测 AudioTrack 的 ViPER session", 0.70f)
+            val verify = calibrator.measure(
+                mode = options.mode,
+                verification = true,
+                processedPlan = plan,
+            ) {
                 progress(it, 0.70f)
-            }
-
-            val framesAfterVerify = ViperControl.status()?.processedFrames ?: framesBeforeVerify
-            check(framesAfterVerify > framesBeforeVerify) {
-                "验证音频没有经过 ViPER。可能是主开关关闭、V4ATune 在排除列表，或当前 Per-App 路由未捕获该会话；" +
-                    "V4ATune 不会为此强制开启 Global Mode。"
             }
 
             progress("根据残差精修", 0.84f)
             plan = TuningPlanner.refine(plan, verify, options)
-            persistence.stage(plan)
-            delay(350)
-            applyPlan(plan)
-            delay(200)
 
-            progress("破音保护 · THD / 峰值压力测试", 0.88f)
+            progress("破音保护 · 精确 session THD / 峰值压力测试", 0.88f)
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, stressVolume, 0)
             delay(150)
-            var postStress = calibrator.distortionStress(first.sampleRate)
+            var postStress = calibrator.distortionStress(first.sampleRate, plan)
             var safePlan = TuningPlanner.applyDistortionSafety(
                 plan = plan,
                 baseline = baselineStress,
@@ -125,11 +108,7 @@ class AutoTuneEngine(private val context: Context) {
 
             if (safetyAdjusted) {
                 plan = safePlan
-                persistence.stage(plan)
-                delay(300)
-                applyPlan(plan)
-                delay(200)
-                postStress = calibrator.distortionStress(first.sampleRate)
+                postStress = calibrator.distortionStress(first.sampleRate, plan)
 
                 // A second bounded pass handles cases where acoustic speaker breakup
                 // remains after the first digital headroom rollback.
@@ -143,25 +122,22 @@ class AutoTuneEngine(private val context: Context) {
                     !safePlan.eqLevels.contentEquals(plan.eqLevels)
                 ) {
                     plan = safePlan
-                    persistence.stage(plan)
-                    delay(300)
-                    applyPlan(plan)
-                    delay(200)
-                    postStress = calibrator.distortionStress(first.sampleRate)
+                    postStress = calibrator.distortionStress(first.sampleRate, plan)
                 }
             }
 
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, testVolume, 0)
             delay(150)
 
-            var driverAfter = ViperControl.status() ?: error("调整后无法读取驱动状态")
-            check(driverAfter.processedFrames >= driverBefore.processedFrames) {
-                "ViPER processedFrames 未前进"
-            }
+            var driverAfter = ViperControl.status() ?: driverBefore
 
             val finalVerify = if (options.mode == TestMode.Deep) {
-                progress("深度模式最终复核", 0.90f)
-                calibrator.measure(TestMode.Quick, true) { progress(it, 0.90f) }
+                progress("深度模式最终复核 · 精确 ViPER session", 0.90f)
+                calibrator.measure(
+                    mode = TestMode.Quick,
+                    verification = true,
+                    processedPlan = plan,
+                ) { progress(it, 0.90f) }
             } else {
                 verify
             }
@@ -180,13 +156,15 @@ class AutoTuneEngine(private val context: Context) {
                 safetyAdjusted,
             )
             val persistenceOk = try {
-                persistence.stage(plan)
-                delay(250)
-                applyPlan(plan)
+                persistence.commitFromBypass(plan)
+                rawBypassActive = false
+                delay(300)
                 driverAfter = ViperControl.status() ?: driverAfter
                 true
-            } catch (_: Throwable) {
-                false
+            } catch (t: Throwable) {
+                runCatching { persistence.restoreLast() }
+                rawBypassActive = false
+                throw t
             }
 
             progress("完成", 1.0f)
@@ -203,28 +181,13 @@ class AutoTuneEngine(private val context: Context) {
                 safetyAdjusted = safetyAdjusted,
             )
         } catch (t: Throwable) {
-            if (staged) {
+            if (rawBypassActive) {
                 runCatching { persistence.restoreLast() }
-            } else if (rawBypassActive) {
-                runCatching { persistence.resumeManager() }
+                rawBypassActive = false
             }
             throw t
         } finally {
             runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0) }
-        }
-    }
-
-    private fun applyPlan(plan: Plan) {
-        ViperControl.apply(plan.commands)
-        if (plan.ddc44 != null && plan.ddc48 != null) {
-            ViperControl.streamDdc(plan.ddc44, plan.ddc48)
-        }
-        plan.kernel?.let { kernel ->
-            ViperControl.streamKernel(
-                samples = kernel,
-                channels = 1,
-                kernelId = "V4ATune_Speaker.wav".hashCode(),
-            )
         }
     }
 
