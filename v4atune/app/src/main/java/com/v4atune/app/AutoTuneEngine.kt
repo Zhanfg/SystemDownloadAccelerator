@@ -52,22 +52,29 @@ class AutoTuneEngine(private val context: Context) {
             rawBypassActive = true
 
             progress("原始链路测量 · 不经过 ViPER", 0.08f)
+            persistence.heartbeatRecovery()
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, testVolume, 0)
             delay(250)
 
             val rawFramesBefore = ViperControl.status()?.processedFrames
 
-            progress("第一次快速全频测量", 0.14f)
+            progress("RAW 扫频 · 正在播放与录音", 0.14f)
             val calibrator = SweepCalibrator(context)
+            persistence.heartbeatRecovery()
             val first = calibrator.measure(options.mode, false) {
                 progress(it, 0.14f)
             }
+            persistence.ensureRecoveryActive()
+            persistence.heartbeatRecovery()
             val beforeMetrics = TuningPlanner.metrics(first, options)
 
-            progress("建立中高音量失真基线", 0.43f)
+            progress("RAW 失真基线 · 125/250/1k/5k/8k", 0.43f)
+            persistence.heartbeatRecovery()
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, stressVolume, 0)
             delay(150)
             val baselineStress = calibrator.distortionStress(first.sampleRate)
+            persistence.ensureRecoveryActive()
+            persistence.heartbeatRecovery()
 
             val rawFramesAfter = ViperControl.status()?.processedFrames
             if (rawFramesBefore != null && rawFramesAfter != null) {
@@ -81,7 +88,8 @@ class AutoTuneEngine(private val context: Context) {
             progress("计算 31 段 IIR / FIR / 动态参数", 0.48f)
             var plan = TuningPlanner.build(first, options)
 
-            progress("第二轮短扫频 · 仅绑定检测 AudioTrack 的 ViPER session", 0.70f)
+            progress("精确 session 验证 · 创建临时 ViPER effect", 0.68f)
+            persistence.heartbeatRecovery()
             val verify = calibrator.measure(
                 mode = options.mode,
                 verification = true,
@@ -89,14 +97,19 @@ class AutoTuneEngine(private val context: Context) {
             ) {
                 progress(it, 0.70f)
             }
+            persistence.ensureRecoveryActive()
+            persistence.heartbeatRecovery()
 
             progress("根据残差精修", 0.84f)
             plan = TuningPlanner.refine(plan, verify, options)
 
             progress("破音保护 · 精确 session THD / 峰值压力测试", 0.88f)
+            persistence.heartbeatRecovery()
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, stressVolume, 0)
             delay(150)
             var postStress = calibrator.distortionStress(first.sampleRate, plan)
+            persistence.ensureRecoveryActive()
+            persistence.heartbeatRecovery()
             var safePlan = TuningPlanner.applyDistortionSafety(
                 plan = plan,
                 baseline = baselineStress,
@@ -108,7 +121,10 @@ class AutoTuneEngine(private val context: Context) {
 
             if (safetyAdjusted) {
                 plan = safePlan
+                persistence.heartbeatRecovery()
                 postStress = calibrator.distortionStress(first.sampleRate, plan)
+                persistence.ensureRecoveryActive()
+                persistence.heartbeatRecovery()
 
                 // A second bounded pass handles cases where acoustic speaker breakup
                 // remains after the first digital headroom rollback.
@@ -122,7 +138,10 @@ class AutoTuneEngine(private val context: Context) {
                     !safePlan.eqLevels.contentEquals(plan.eqLevels)
                 ) {
                     plan = safePlan
+                    persistence.heartbeatRecovery()
                     postStress = calibrator.distortionStress(first.sampleRate, plan)
+                    persistence.ensureRecoveryActive()
+                    persistence.heartbeatRecovery()
                 }
             }
 
@@ -133,11 +152,15 @@ class AutoTuneEngine(private val context: Context) {
 
             val finalVerify = if (options.mode == TestMode.Deep) {
                 progress("深度模式最终复核 · 精确 ViPER session", 0.90f)
+                persistence.heartbeatRecovery()
                 calibrator.measure(
                     mode = TestMode.Quick,
                     verification = true,
                     processedPlan = plan,
-                ) { progress(it, 0.90f) }
+                ) { progress(it, 0.90f) }.also {
+                    persistence.ensureRecoveryActive()
+                    persistence.heartbeatRecovery()
+                }
             } else {
                 verify
             }
@@ -156,6 +179,8 @@ class AutoTuneEngine(private val context: Context) {
                 safetyAdjusted,
             )
             val persistenceOk = try {
+                progress("提交最终配置并恢复 ViPER 管理器", 0.98f)
+                persistence.heartbeatRecovery()
                 persistence.commitFromBypass(plan)
                 rawBypassActive = false
                 delay(300)
