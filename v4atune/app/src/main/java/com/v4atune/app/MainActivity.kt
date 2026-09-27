@@ -312,9 +312,9 @@ private fun TunePage(
 
         item {
             Text(
-                "测量链：RAW 基线先释放全部 ViPER AudioEffect；PROCESSED 验证则只给当前检测 AudioTrack 的" +
-                    " session 临时挂一个 ViPER effect，验证结束立即释放。整个测量过程不依赖 Global / Per-App 路由；" +
-                    "最终只写 DSP 参数，并原样保留你的 Global Mode、主开关、自动启动和排除应用设置。",
+                "测量链：ViPER 管理器进程保持运行，只临时关闭当前服务内的 Master 来释放 Global / Per-App effects；" +
+                    "RAW 测量不经过 ViPER，PROCESSED 验证只给检测 AudioTrack 的 session 临时挂 effect。" +
+                    "最终提交才短暂重启管理器，并原样保留 Global Mode、主开关、自动启动和排除应用设置。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
