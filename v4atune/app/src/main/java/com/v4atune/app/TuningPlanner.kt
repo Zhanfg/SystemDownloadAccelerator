@@ -370,6 +370,105 @@ object TuningPlanner {
         )
     }
 
+    fun applyDistortionSafety(
+        plan: Plan,
+        baseline: List<DistortionProbe>,
+        after: List<DistortionProbe>,
+        options: TuneOptions,
+    ): Plan {
+        if (baseline.isEmpty() || after.isEmpty()) return plan
+
+        val byFreq = baseline.associateBy { it.frequency }
+        var severity = 0
+
+        after.forEach { probe ->
+            val before = byFreq[probe.frequency] ?: return@forEach
+            val absoluteLimit = if (probe.frequency <= 200.0) 0.18 else 0.08
+            val relativeLimit = before.thd * 1.35 + 0.005
+
+            if (probe.peak >= 0.995 || probe.thd > max(absoluteLimit, relativeLimit * 1.5)) {
+                severity = max(severity, 2)
+            } else if (
+                probe.peak >= 0.985 ||
+                probe.thd > max(absoluteLimit, relativeLimit)
+            ) {
+                severity = max(severity, 1)
+            }
+        }
+
+        if (severity == 0) return plan
+
+        val spec = SceneDspProfiles.forScene(options.effectiveScene)
+        val extraDb = if (severity >= 2) 3.0 else 1.5
+        val gain = 10.0.pow(-extraDb / 20.0).toFloat()
+
+        val safeEq = DoubleArray(plan.eqLevels.size) { i ->
+            (plan.eqLevels[i] - extraDb).coerceIn(-12.0, 0.0)
+        }
+
+        val safeKernel = plan.kernel?.let { kernel ->
+            FloatArray(kernel.size) { i -> kernel[i] * gain }
+        }
+
+        val profile = JSONObject(plan.profile.toString())
+        profile.getJSONObject("equalizer").put("bands", arr(safeEq))
+
+        profile.getJSONObject("masterLimiter").apply {
+            val saferCeiling = 10.0.pow(
+                min(spec.safety.limiterCeilingDb - 0.5 * severity, -2.0) / 20.0,
+            )
+            put("threshold", min(optDouble("threshold", 1.0), saferCeiling))
+            put(
+                "outputVolume",
+                optDouble("outputVolume", 1.0) * 10.0.pow(-0.5 * severity / 20.0),
+            )
+        }
+
+        profile.getJSONObject("spectrumExtension").apply {
+            if (severity >= 2) put("enable", false)
+            put("exciter", min(optDouble("exciter", 0.0), 0.10))
+        }
+
+        profile.getJSONObject("psychoacousticBass").apply {
+            if (severity >= 2) put("enable", false)
+            put("intensity", min(optDouble("intensity", 0.0), 0.14))
+            put("originalLevel", min(optDouble("originalLevel", 1.0), 0.82))
+        }
+
+        profile.getJSONObject("bass").apply {
+            if (severity >= 2) put("enable", false)
+            put("gain", min(optDouble("gain", 0.0), 0.14))
+        }
+
+        profile.getJSONObject("bassMono").apply {
+            if (severity >= 1) put("enable", false)
+            put("gain", min(optDouble("gain", 0.0), 0.12))
+        }
+
+        profile.getJSONObject("clarity").apply {
+            put("gain", min(optDouble("gain", 0.0), 0.24))
+        }
+
+        profile.getJSONObject("playbackGainControl").apply {
+            put("maxGain", min(optDouble("maxGain", 1.0), 1.15))
+            put("strength", min(optDouble("strength", 0.0), 0.75))
+        }
+
+        profile.getJSONObject("lufs").apply {
+            put("maxGain", min(optDouble("maxGain", 0.0), 1.0))
+            if (severity >= 2 && options.effectiveScene != Scene.Night) {
+                put("target", min(optDouble("target", -18.0), -16.0))
+            }
+        }
+
+        return plan.copy(
+            profile = profile,
+            eqLevels = safeEq,
+            kernel = safeKernel,
+            commands = ProfileCodec.commands(profile),
+        )
+    }
+
     fun refine(
         first: Plan,
         verification: Measurement,
