@@ -197,16 +197,18 @@ class SweepCalibrator(private val context: Context) {
         val noiseCount = (sampleRate * preRecordSeconds * 0.75).roundToInt()
         val noiseDb = Acoustics.rmsDb(recorded, 0, noiseCount)
         val sweepStart = detectSweepStart(recorded, sampleRate, sweep.size)
-        val transfer = transferResponse(sweep, recorded, sweepStart, sampleRate)
+        val transfer = transferResponse(sweep, recorded, sweepStart, sampleRate, noiseCount)
 
         val denseFreqs = Acoustics.grid24()
         val dense = denseFreqs.map { f ->
             val level = transfer.levelAt(f)
-            ResponsePoint(f, level, level - noiseDb)
+            val snr = if (f in 125.0..10000.0) transfer.snrAt(f) else 0.0
+            ResponsePoint(f, level, snr)
         }
         val eq31 = Acoustics.eq31.map { f ->
             val level = transfer.levelAt(f)
-            ResponsePoint(f, level, level - noiseDb)
+            val snr = if (f in 125.0..10000.0) transfer.snrAt(f) else 0.0
+            ResponsePoint(f, level, snr)
         }
 
         if (verification) {
@@ -440,10 +442,34 @@ class SweepCalibrator(private val context: Context) {
         val n: Int,
         val re: DoubleArray,
         val im: DoubleArray,
+        val snrDb: DoubleArray,
     ) {
+        private fun binRange(frequency: Double): IntRange {
+            val halfOct = 1.0 / 48.0
+            val loF = frequency / 2.0.pow(halfOct)
+            val hiF = frequency * 2.0.pow(halfOct)
+            val lo = (loF * n / sampleRate).roundToInt().coerceIn(1, n / 2 - 1)
+            val hi = (hiF * n / sampleRate).roundToInt().coerceIn(lo, n / 2 - 1)
+            return lo..hi
+        }
+
         fun levelAt(frequency: Double): Double {
-            val bin = (frequency * n / sampleRate).roundToInt().coerceIn(1, n / 2 - 1)
-            return 20.0 * log10(max(1e-12, hypot(re[bin], im[bin])))
+            val bins = binRange(frequency)
+            var power = 0.0
+            var count = 0
+            for (bin in bins) {
+                power += re[bin] * re[bin] + im[bin] * im[bin]
+                count++
+            }
+            return 10.0 * log10(max(1e-24, power / max(1, count)))
+        }
+
+        fun snrAt(frequency: Double): Double {
+            val vals = binRange(frequency).map { snrDb[it] }.sorted()
+            if (vals.isEmpty()) return 0.0
+            val m = vals.size / 2
+            return (if (vals.size % 2 == 1) vals[m] else (vals[m - 1] + vals[m]) / 2.0)
+                .coerceIn(0.0, 80.0)
         }
     }
 
@@ -452,6 +478,7 @@ class SweepCalibrator(private val context: Context) {
         recorded: ShortArray,
         start: Int,
         sampleRate: Int,
+        noiseCount: Int,
     ): Transfer {
         val n = Acoustics.nextPow2(sweep.size)
         val xr = DoubleArray(n)
@@ -475,6 +502,36 @@ class SweepCalibrator(private val context: Context) {
             hr[k] = (yr[k] * xr[k] + yi[k] * xi[k]) / den
             hi[k] = (yi[k] * xr[k] - yr[k] * xi[k]) / den
         }
-        return Transfer(sampleRate, n, hr, hi)
+
+        // Estimate spectral SNR in the same FFT domain. The previous implementation
+        // subtracted a time-domain dBFS noise value from transfer-function dB, which
+        // mixed incompatible units and made the low/high bands look trustworthy when
+        // they were not.
+        val nr = DoubleArray(n)
+        val ni = DoubleArray(n)
+        val nc = min(noiseCount, recorded.size)
+        var noiseWindowSum = 0.0
+        for (i in 0 until nc) {
+            val w = if (nc <= 1) 1.0 else 0.5 - 0.5 * cos(2.0 * PI * i / (nc - 1))
+            nr[i] = recorded[i] / 32768.0 * w
+            noiseWindowSum += w
+        }
+        Acoustics.fft(nr, ni, false)
+
+        var signalWindowSum = 0.0
+        for (i in 0 until available) {
+            signalWindowSum += 0.5 - 0.5 * cos(2.0 * PI * i / max(1, sweep.size - 1))
+        }
+        signalWindowSum = max(1e-9, signalWindowSum)
+        noiseWindowSum = max(1e-9, noiseWindowSum)
+
+        val snr = DoubleArray(n)
+        for (k in 1 until n / 2) {
+            val sig = hypot(yr[k], yi[k]) / signalWindowSum
+            val noi = hypot(nr[k], ni[k]) / noiseWindowSum
+            snr[k] = 20.0 * log10(max(1e-12, sig) / max(1e-12, noi))
+        }
+
+        return Transfer(sampleRate, n, hr, hi, snr)
     }
 }
