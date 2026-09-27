@@ -153,7 +153,7 @@ class ViperSessionEffect private constructor(
         is WireValue.Bool -> ByteBuffer.allocate(13)
             .order(ByteOrder.LITTLE_ENDIAN)
             .putInt(1).putInt(value.index).putInt(1)
-            .put(if (value.value) 1 else 0)
+            .put(if (value.value) 1.toByte() else 0.toByte())
             .array()
 
         is WireValue.IntValue -> ByteBuffer.allocate(16)
