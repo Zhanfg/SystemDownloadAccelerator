@@ -387,20 +387,29 @@ object TuningPlanner {
             else (sceneTargetOffset(options, p.frequency) - (p.levelDb - ref)).coerceIn(-1.5, 1.0)
         }.smooth3()
 
-        val newEq = DoubleArray(first.eqLevels.size) { i ->
+        val newEqRaw = DoubleArray(first.eqLevels.size) { i ->
             (
                 first.eqLevels[i] +
                     interpolate(vf, residual, first.eqFrequencies[i]) * spec.fir.refineEqShare
-                ).coerceIn(-8.0, 1.5)
+                ).coerceIn(-12.0, 0.0)
         }.smooth3()
+        val maxEq = newEqRaw.maxOrNull() ?: -spec.safety.preHeadroomDb
+        val extraEqShift = max(0.0, maxEq + spec.safety.preHeadroomDb)
+        val newEq = DoubleArray(newEqRaw.size) { i ->
+            (newEqRaw[i] - extraEqShift).coerceIn(-12.0, 0.0)
+        }
 
         val profile = JSONObject(first.profile.toString())
         profile.getJSONObject("equalizer").put("bands", arr(newEq))
 
-        val residualFir = DoubleArray(first.firDb.size) { i ->
+        val residualFirRaw = DoubleArray(first.firDb.size) { i ->
             val correction = interpolate(vf, residual, first.firFrequencies[i]) * spec.fir.refineFirShare
             (first.firDb[i] + correction).coerceIn(spec.fir.maxCutDb, spec.fir.maxBoostDb)
         }.smooth3()
+        val firShift = max(0.0, residualFirRaw.maxOrNull() ?: 0.0)
+        val residualFir = DoubleArray(residualFirRaw.size) { i ->
+            (residualFirRaw[i] - firShift).coerceIn(spec.fir.maxCutDb, 0.0)
+        }
 
         val kernel = if (profile.getJSONObject("convolver").getBoolean("enable")) {
             minimumPhaseFir(
