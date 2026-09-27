@@ -61,6 +61,15 @@ data class LoudnessStrategy(
     val mbcReleasesSec: List<Double>,
 )
 
+data class SafetyStrategy(
+    val preHeadroomDb: Double,
+    val limiterCeilingDb: Double,
+    val maxSpectrumExciter: Double,
+    val maxPsychoBassIntensity: Double,
+    val maxBassGain: Double,
+    val maxClarityGain: Double,
+)
+
 data class SceneDspSpec(
     val scene: Scene,
     val target: Target,
@@ -70,6 +79,7 @@ data class SceneDspSpec(
     val dynamicEq: DynamicEqStrategy,
     val spatial: SpatialStrategy,
     val loudness: LoudnessStrategy,
+    val safety: SafetyStrategy,
     val policies: Map<Component, Policy>,
 )
 
@@ -141,6 +151,7 @@ object SceneDspProfiles {
         dynamicEq = DynamicEqStrategy(true, 6, 2.4, 0.9, 0.8, 3.2, 3.5, -24.0, 12.0, 160.0),
         spatial = neutralSpatial,
         loudness = neutralLoudness,
+        safety = SafetyStrategy(1.5, -1.5, 0.18, 0.22, 0.25, 0.35),
         policies = policies(
             on = setOf(Component.SpeakerCorrection, Component.Equalizer),
             auto = setOf(Component.Convolver, Component.DynamicEq, Component.Spectrum),
@@ -168,6 +179,7 @@ object SceneDspProfiles {
             baseHeadroomDb = 1.2,
             lufsTarget = -17.0,
         ),
+        safety = SafetyStrategy(1.8, -1.5, 0.20, 0.26, 0.30, 0.40),
         policies = policies(
             on = setOf(Component.SpeakerCorrection, Component.Equalizer),
             auto = setOf(
@@ -216,6 +228,7 @@ object SceneDspProfiles {
             lufsTarget = -16.0,
             lufsMaxGain = 2.5,
         ),
+        safety = SafetyStrategy(2.2, -1.8, 0.18, 0.28, 0.30, 0.45),
         policies = policies(
             on = setOf(
                 Component.SpeakerCorrection,
@@ -257,6 +270,7 @@ object SceneDspProfiles {
             baseHeadroomDb = 1.0,
             lufsTarget = -18.0,
         ),
+        safety = SafetyStrategy(2.0, -1.5, 0.16, 0.18, 0.20, 0.38),
         policies = policies(
             on = setOf(
                 Component.SpeakerCorrection,
@@ -291,6 +305,7 @@ object SceneDspProfiles {
             lufsTarget = -18.0,
             lufsMaxGain = 2.0,
         ),
+        safety = SafetyStrategy(2.0, -1.8, 0.14, 0.12, 0.15, 0.42),
         policies = policies(
             on = setOf(
                 Component.SpeakerCorrection,
@@ -333,6 +348,7 @@ object SceneDspProfiles {
             mbcAttacksSec = listOf(0.010, 0.008, 0.006, 0.005, 0.005),
             mbcReleasesSec = listOf(0.140, 0.120, 0.100, 0.085, 0.080),
         ),
+        safety = SafetyStrategy(3.0, -2.2, 0.16, 0.28, 0.28, 0.42),
         policies = policies(
             on = setOf(
                 Component.SpeakerCorrection,
@@ -379,6 +395,7 @@ object SceneDspProfiles {
             fetAttackSec = 0.025,
             fetReleaseSec = 0.180,
         ),
+        safety = SafetyStrategy(2.2, -2.0, 0.10, 0.10, 0.12, 0.36),
         policies = policies(
             on = setOf(
                 Component.SpeakerCorrection,
