@@ -623,6 +623,22 @@ private fun QuickResultCard(result: TuneResult, onOpenReport: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text(
+                if (result.safetyAdjusted) {
+                    "破音保护已介入 · 压力测试 THD " +
+                        format(distortionMedian(result.distortionBefore) * 100.0) + "% → " +
+                        format(distortionMedian(result.distortionAfter) * 100.0) + "%"
+                } else {
+                    "破音保护通过 · 压力测试 THD " +
+                        format(distortionMedian(result.distortionAfter) * 100.0) + "%"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (result.safetyAdjusted) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
         }
     }
 }
@@ -855,7 +871,15 @@ private fun ReportPage(
                     Text("测量摘要", fontWeight = FontWeight.SemiBold)
                     MetricLine("低频缺口", format(result.before.lowDeficitDb) + " dB")
                     MetricLine("高频缺口", format(result.before.highDeficitDb) + " dB")
-                    MetricLine("THD 中位", format(result.before.medianThd * 100.0) + "%")
+                    MetricLine(
+                        "压力测试 THD",
+                        format(distortionMedian(result.distortionBefore) * 100.0) + "% → " +
+                            format(distortionMedian(result.distortionAfter) * 100.0) + "%",
+                    )
+                    MetricLine(
+                        "破音保护",
+                        if (result.safetyAdjusted) "已自动回退增益" else "通过",
+                    )
                     MetricLine("左右声道差", format(result.before.channelDeltaDb) + " dB")
                     MetricLine("压缩量", format(result.before.compressionDb) + " dB")
                     MetricLine("IIR", result.plan.eqLevels.size.toString() + " 段")
@@ -993,6 +1017,14 @@ private fun componentGroupSubtitle(title: String): String = when (title) {
     "音色与低频" -> "低频体感、高频延伸与清晰度"
     "空间" -> "宽度、深度、延迟与混响"
     else -> "耳机取向和模拟染色类处理"
+}
+
+private fun distortionMedian(values: List<DistortionProbe>): Double {
+    if (values.isEmpty()) return 0.0
+    val sorted = values.map { it.thd }.sorted()
+    val middle = sorted.size / 2
+    return if (sorted.size % 2 == 1) sorted[middle]
+    else (sorted[middle - 1] + sorted[middle]) / 2.0
 }
 
 private fun format(value: Double): String =
