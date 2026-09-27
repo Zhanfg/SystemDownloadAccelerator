@@ -12,8 +12,8 @@ android {
         applicationId = "com.v4atune.app"
         minSdk = 28
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.3.5-alpha01"
+        versionCode = 9
+        versionName = "0.3.6-alpha01"
     }
 
     buildTypes {
