@@ -253,7 +253,7 @@ class SweepCalibrator(private val context: Context) {
     }
 
     fun distortionStress(sampleRate: Int): List<DistortionProbe> =
-        listOf(125.0, 1000.0, 5000.0).map { f ->
+        listOf(125.0, 250.0, 1000.0, 5000.0, 8000.0).map { f ->
             val probe = toneProbe(sampleRate, f, -10.0)
             DistortionProbe(f, probe.thd, probe.peak)
         }
