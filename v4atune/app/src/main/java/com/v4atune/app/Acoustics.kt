@@ -225,7 +225,7 @@ class SweepCalibrator(private val context: Context) {
             )
         }
 
-        progress("失真探针 · 100 Hz / 1 kHz / 8 kHz")
+        progress("失真探针 · 125 / 250 Hz · 1 kHz · 5 / 8 kHz")
         val distortion = distortionStress(sampleRate)
 
         progress("左右声道平衡")
