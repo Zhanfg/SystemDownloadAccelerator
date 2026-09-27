@@ -127,7 +127,7 @@ class ScenePresetsTest {
         val outdoor = SceneDspProfiles.outdoor
         val night = SceneDspProfiles.night
 
-        assertEquals(-14.0, outdoor.loudness.lufsTarget, 0.0)
+        assertEquals(-15.0, outdoor.loudness.lufsTarget, 0.0)
         assertEquals(Policy.On, outdoor.policies[Component.PlaybackGain])
         assertEquals(Policy.On, outdoor.policies[Component.MultibandCompressor])
         assertTrue(outdoor.loudness.playbackMaxGain > night.loudness.playbackMaxGain)
@@ -153,6 +153,23 @@ class ScenePresetsTest {
         assertEquals(Scene.Movie, custom.effectiveScene)
         assertEquals(8192, custom.firTaps)
         assertEquals(Policy.On, custom.policies[Component.Reverb])
+    }
+
+    @Test
+    fun everySceneHasExplicitDistortionSafetyBudget() {
+        Scene.entries.filter { it != Scene.Custom }.forEach { scene ->
+            val safety = SceneDspProfiles.forScene(scene).safety
+            assertTrue(safety.preHeadroomDb >= 1.5)
+            assertTrue(safety.limiterCeilingDb <= -1.5)
+            assertTrue(safety.maxSpectrumExciter <= 0.20)
+            assertTrue(safety.maxPsychoBassIntensity <= 0.28)
+            assertTrue(safety.maxBassGain <= 0.30)
+            assertTrue(safety.maxClarityGain <= 0.45)
+        }
+
+        val outdoor = SceneDspProfiles.outdoor
+        assertTrue(outdoor.loudness.playbackMaxGain <= 1.35)
+        assertTrue(outdoor.loudness.lufsMaxGain <= 1.8)
     }
 
 }
