@@ -224,10 +224,7 @@ class SweepCalibrator(private val context: Context) {
         }
 
         progress("失真探针 · 100 Hz / 1 kHz / 8 kHz")
-        val distortion = listOf(100.0, 1000.0, 8000.0).map { f ->
-            val probe = toneProbe(sampleRate, f, -13.0)
-            DistortionProbe(f, probe.thd, probe.peak)
-        }
+        val distortion = distortionStress(sampleRate)
 
         progress("左右声道平衡")
         val left = toneProbe(sampleRate, 1000.0, -18.0, left = true, right = false)
@@ -252,6 +249,12 @@ class SweepCalibrator(private val context: Context) {
             clipped = recorded.maxOf { abs(it.toInt()) } >= 32700 || distortion.any { it.peak >= 0.995 },
         )
     }
+
+    fun distortionStress(sampleRate: Int): List<DistortionProbe> =
+        listOf(125.0, 1000.0, 5000.0).map { f ->
+            val probe = toneProbe(sampleRate, f, -10.0)
+            DistortionProbe(f, probe.thd, probe.peak)
+        }
 
     private data class Probe(val levelDb: Double, val thd: Double, val peak: Double)
 
