@@ -17,6 +17,9 @@ data class TuneResult(
     val driverAfter: DriverStatus,
     val outputDir: File,
     val persistenceOk: Boolean,
+    val distortionBefore: List<DistortionProbe>,
+    val distortionAfter: List<DistortionProbe>,
+    val safetyAdjusted: Boolean,
 )
 
 class AutoTuneEngine(private val context: Context) {
@@ -35,6 +38,7 @@ class AutoTuneEngine(private val context: Context) {
         val originalVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
         val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val testVolume = maxOf(1, (maxVolume * 0.35f).roundToInt())
+        val stressVolume = maxOf(testVolume, (maxVolume * 0.55f).roundToInt())
 
         val out = File(context.getExternalFilesDir(null), "runs/" + System.currentTimeMillis())
         out.mkdirs()
@@ -51,6 +55,13 @@ class AutoTuneEngine(private val context: Context) {
                 progress(it, 0.14f)
             }
             val beforeMetrics = TuningPlanner.metrics(first, options)
+
+            progress("建立中高音量失真基线", 0.43f)
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, stressVolume, 0)
+            delay(150)
+            val baselineStress = calibrator.distortionStress(first.sampleRate)
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, testVolume, 0)
+            delay(150)
 
             progress("计算 31 段 IIR / FIR / 动态参数", 0.48f)
             var plan = TuningPlanner.build(first, options)
@@ -69,6 +80,46 @@ class AutoTuneEngine(private val context: Context) {
             applyPlan(plan)
             delay(300)
 
+            progress("破音保护 · THD / 峰值压力测试", 0.88f)
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, stressVolume, 0)
+            delay(150)
+            var postStress = calibrator.distortionStress(first.sampleRate)
+            var safePlan = TuningPlanner.applyDistortionSafety(
+                plan = plan,
+                baseline = baselineStress,
+                after = postStress,
+                options = options,
+            )
+            var safetyAdjusted = safePlan.profile.toString() != plan.profile.toString() ||
+                !safePlan.eqLevels.contentEquals(plan.eqLevels)
+
+            if (safetyAdjusted) {
+                plan = safePlan
+                applyPlan(plan)
+                delay(250)
+                postStress = calibrator.distortionStress(first.sampleRate)
+
+                // A second bounded pass handles cases where acoustic speaker breakup
+                // remains after the first digital headroom rollback.
+                safePlan = TuningPlanner.applyDistortionSafety(
+                    plan = plan,
+                    baseline = baselineStress,
+                    after = postStress,
+                    options = options,
+                )
+                if (safePlan.profile.toString() != plan.profile.toString() ||
+                    !safePlan.eqLevels.contentEquals(plan.eqLevels)
+                ) {
+                    plan = safePlan
+                    applyPlan(plan)
+                    delay(250)
+                    postStress = calibrator.distortionStress(first.sampleRate)
+                }
+            }
+
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, testVolume, 0)
+            delay(150)
+
             var driverAfter = ViperControl.status() ?: error("调整后无法读取驱动状态")
             check(driverAfter.processedFrames >= driverBefore.processedFrames) {
                 "ViPER processedFrames 未前进"
@@ -83,7 +134,17 @@ class AutoTuneEngine(private val context: Context) {
             val afterMetrics = TuningPlanner.metrics(finalVerify, options)
 
             progress("保存配置与测试报告", 0.96f)
-            saveArtifacts(out, plan, beforeMetrics, afterMetrics, driverBefore, driverAfter)
+            saveArtifacts(
+                out,
+                plan,
+                beforeMetrics,
+                afterMetrics,
+                driverBefore,
+                driverAfter,
+                baselineStress,
+                postStress,
+                safetyAdjusted,
+            )
             val persistenceOk = try {
                 ViperPersistence(context).sync(plan)
                 delay(250)
@@ -103,6 +164,9 @@ class AutoTuneEngine(private val context: Context) {
                 driverAfter = driverAfter,
                 outputDir = out,
                 persistenceOk = persistenceOk,
+                distortionBefore = baselineStress,
+                distortionAfter = postStress,
+                safetyAdjusted = safetyAdjusted,
             )
         } finally {
             runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0) }
@@ -130,6 +194,9 @@ class AutoTuneEngine(private val context: Context) {
         after: TuneMetrics,
         driverBefore: DriverStatus,
         driverAfter: DriverStatus,
+        distortionBefore: List<DistortionProbe>,
+        distortionAfter: List<DistortionProbe>,
+        safetyAdjusted: Boolean,
     ) {
         File(dir, "profile.json").writeText(plan.profile.toString(2))
         File(dir, "report.json").writeText(
@@ -147,6 +214,31 @@ class AutoTuneEngine(private val context: Context) {
                 put("driverVersion", driverAfter.versionName)
                 put("processedFramesBefore", driverBefore.processedFrames)
                 put("processedFramesAfter", driverAfter.processedFrames)
+                put("distortionSafetyAdjusted", safetyAdjusted)
+                put(
+                    "distortionBefore",
+                    org.json.JSONArray().apply {
+                        distortionBefore.forEach { p ->
+                            put(JSONObject().apply {
+                                put("frequency", p.frequency)
+                                put("thd", p.thd)
+                                put("peak", p.peak)
+                            })
+                        }
+                    },
+                )
+                put(
+                    "distortionAfter",
+                    org.json.JSONArray().apply {
+                        distortionAfter.forEach { p ->
+                            put(JSONObject().apply {
+                                put("frequency", p.frequency)
+                                put("thd", p.thd)
+                                put("peak", p.peak)
+                            })
+                        }
+                    },
+                )
             }.toString(2),
         )
         plan.kernel?.let { WavFiles.writeMonoFloat(File(dir, "V4ATune_Speaker.wav"), it, driverAfter.sampleRate) }
