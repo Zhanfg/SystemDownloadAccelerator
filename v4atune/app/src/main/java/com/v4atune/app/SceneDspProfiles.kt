@@ -153,8 +153,8 @@ object SceneDspProfiles {
         loudness = neutralLoudness,
         safety = SafetyStrategy(1.5, -1.5, 0.18, 0.22, 0.25, 0.35),
         policies = policies(
-            on = setOf(Component.SpeakerCorrection, Component.Equalizer),
-            auto = setOf(Component.Convolver, Component.DynamicEq, Component.Spectrum),
+            on = setOf(Component.Equalizer),
+            auto = setOf(Component.Convolver, Component.DynamicEq),
         ),
     )
 
@@ -181,14 +181,10 @@ object SceneDspProfiles {
         ),
         safety = SafetyStrategy(1.8, -1.5, 0.20, 0.26, 0.30, 0.40),
         policies = policies(
-            on = setOf(Component.SpeakerCorrection, Component.Equalizer),
+            on = setOf(Component.Equalizer),
             auto = setOf(
                 Component.Convolver,
                 Component.DynamicEq,
-                Component.Spectrum,
-                Component.PsychoBass,
-                Component.Bass,
-                Component.Clarity,
                 Component.StereoImager,
             ),
         ),
@@ -231,18 +227,13 @@ object SceneDspProfiles {
         safety = SafetyStrategy(2.2, -1.8, 0.18, 0.28, 0.30, 0.45),
         policies = policies(
             on = setOf(
-                Component.SpeakerCorrection,
                 Component.Equalizer,
                 Component.FieldSurround,
                 Component.StereoImager,
-                Component.Clarity,
             ),
             auto = setOf(
                 Component.Convolver,
                 Component.DynamicEq,
-                Component.Spectrum,
-                Component.PsychoBass,
-                Component.Bass,
             ),
         ),
     )
@@ -273,13 +264,10 @@ object SceneDspProfiles {
         safety = SafetyStrategy(2.0, -1.5, 0.16, 0.18, 0.20, 0.38),
         policies = policies(
             on = setOf(
-                Component.SpeakerCorrection,
                 Component.Equalizer,
                 Component.DynamicEq,
                 Component.StereoImager,
-                Component.Clarity,
             ),
-            auto = setOf(Component.Spectrum),
         ),
     )
 
@@ -308,12 +296,10 @@ object SceneDspProfiles {
         safety = SafetyStrategy(2.0, -1.8, 0.14, 0.12, 0.15, 0.42),
         policies = policies(
             on = setOf(
-                Component.SpeakerCorrection,
                 Component.Equalizer,
                 Component.DynamicEq,
-                Component.Clarity,
             ),
-            auto = setOf(Component.Convolver, Component.Lufs, Component.Spectrum),
+            auto = setOf(Component.Convolver, Component.Lufs),
         ),
     )
 
@@ -351,20 +337,13 @@ object SceneDspProfiles {
         safety = SafetyStrategy(3.0, -2.2, 0.16, 0.28, 0.28, 0.42),
         policies = policies(
             on = setOf(
-                Component.SpeakerCorrection,
                 Component.Equalizer,
                 Component.DynamicEq,
                 Component.PlaybackGain,
                 Component.Lufs,
                 Component.MultibandCompressor,
-                Component.PsychoBass,
-                Component.Clarity,
             ),
-            auto = setOf(
-                Component.Convolver,
-                Component.Spectrum,
-                Component.Bass,
-            ),
+            auto = setOf(Component.Convolver),
         ),
     )
 
@@ -398,12 +377,10 @@ object SceneDspProfiles {
         safety = SafetyStrategy(2.2, -2.0, 0.10, 0.10, 0.12, 0.36),
         policies = policies(
             on = setOf(
-                Component.SpeakerCorrection,
                 Component.Equalizer,
                 Component.DynamicEq,
                 Component.Lufs,
                 Component.FetCompressor,
-                Component.Clarity,
             ),
             auto = setOf(Component.Convolver),
         ),
