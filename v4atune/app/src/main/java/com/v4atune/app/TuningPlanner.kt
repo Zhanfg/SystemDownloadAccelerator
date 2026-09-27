@@ -383,35 +383,86 @@ object TuningPlanner {
         if (baseline.isEmpty() || after.isEmpty()) return plan
 
         val byFreq = baseline.associateBy { it.frequency }
-        var severity = 0
+        var lowSeverity = 0
+        var midSeverity = 0
+        var highSeverity = 0
 
-        after.forEach { probe ->
-            val before = byFreq[probe.frequency] ?: return@forEach
-            val absoluteLimit = if (probe.frequency <= 200.0) 0.18 else 0.08
-            val relativeLimit = before.thd * 1.35 + 0.005
+        fun classify(probe: DistortionProbe, before: DistortionProbe): Int {
+            val absoluteLimit = when {
+                probe.frequency <= 250.0 -> 0.10
+                probe.frequency >= 4000.0 -> 0.055
+                else -> 0.045
+            }
+            val relativeWarn = before.thd * 1.25 + 0.003
+            val relativeHard = before.thd * 1.60 + 0.008
 
-            if (probe.peak >= 0.995 || probe.thd > max(absoluteLimit, relativeLimit * 1.5)) {
-                severity = max(severity, 2)
-            } else if (
+            return when {
+                probe.peak >= 0.995 ||
+                    probe.thd > absoluteLimit * 1.8 ||
+                    probe.thd > relativeHard -> 2
                 probe.peak >= 0.985 ||
-                probe.thd > max(absoluteLimit, relativeLimit)
-            ) {
-                severity = max(severity, 1)
+                    probe.thd > absoluteLimit ||
+                    probe.thd > relativeWarn -> 1
+                else -> 0
             }
         }
 
+        after.forEach { probe ->
+            val before = byFreq[probe.frequency] ?: return@forEach
+            val s = classify(probe, before)
+            when {
+                probe.frequency <= 250.0 -> lowSeverity = max(lowSeverity, s)
+                probe.frequency >= 4000.0 -> highSeverity = max(highSeverity, s)
+                else -> midSeverity = max(midSeverity, s)
+            }
+        }
+
+        val severity = max(lowSeverity, max(midSeverity, highSeverity))
         if (severity == 0) return plan
 
         val spec = SceneDspProfiles.forScene(options.effectiveScene)
-        val extraDb = if (severity >= 2) 3.0 else 1.5
-        val gain = 10.0.pow(-extraDb / 20.0).toFloat()
-
-        val safeEq = DoubleArray(plan.eqLevels.size) { i ->
-            (plan.eqLevels[i] - extraDb).coerceIn(-12.0, 0.0)
+        val globalDb = when {
+            midSeverity >= 2 -> 1.5
+            midSeverity == 1 -> 0.75
+            else -> 0.35 * severity
+        }
+        val lowCutDb = when (lowSeverity) {
+            2 -> 4.5
+            1 -> 2.5
+            else -> 0.0
+        }
+        val highCutDb = when (highSeverity) {
+            2 -> 3.5
+            1 -> 2.0
+            else -> 0.0
         }
 
+        fun lowWeight(f: Double): Double = when {
+            f <= 250.0 -> 1.0
+            f >= 630.0 -> 0.0
+            else -> ((ln(630.0) - ln(f)) / (ln(630.0) - ln(250.0))).coerceIn(0.0, 1.0)
+        }
+
+        fun highWeight(f: Double): Double = when {
+            f <= 3150.0 -> 0.0
+            f >= 6300.0 -> 1.0
+            else -> ((ln(f) - ln(3150.0)) / (ln(6300.0) - ln(3150.0))).coerceIn(0.0, 1.0)
+        }
+
+        val safeEq = DoubleArray(plan.eqLevels.size) { i ->
+            val f = plan.eqFrequencies[i]
+            (
+                plan.eqLevels[i] -
+                    globalDb -
+                    lowCutDb * lowWeight(f) -
+                    highCutDb * highWeight(f)
+                ).coerceIn(-12.0, 0.0)
+        }
+
+        val kernelScaleDb = globalDb + 0.5 * max(lowSeverity, highSeverity)
+        val kernelGain = 10.0.pow(-kernelScaleDb / 20.0).toFloat()
         val safeKernel = plan.kernel?.let { kernel ->
-            FloatArray(kernel.size) { i -> kernel[i] * gain }
+            FloatArray(kernel.size) { i -> kernel[i] * kernelGain }
         }
 
         val profile = JSONObject(plan.profile.toString())
@@ -424,45 +475,110 @@ object TuningPlanner {
             put("threshold", min(optDouble("threshold", 1.0), saferCeiling))
             put(
                 "outputVolume",
-                optDouble("outputVolume", 1.0) * 10.0.pow(-0.5 * severity / 20.0),
+                optDouble("outputVolume", 1.0) * 10.0.pow(-(0.5 + globalDb) / 20.0),
             )
         }
 
-        profile.getJSONObject("spectrumExtension").apply {
-            if (severity >= 2) put("enable", false)
-            put("exciter", min(optDouble("exciter", 0.0), 0.10))
+        if (highSeverity > 0) {
+            profile.getJSONObject("spectrumExtension").apply {
+                put("enable", false)
+                put("exciter", 0.0)
+            }
+            profile.getJSONObject("clarity").apply {
+                put("enable", false)
+                put("gain", 0.0)
+            }
         }
 
-        profile.getJSONObject("psychoacousticBass").apply {
-            if (severity >= 2) put("enable", false)
-            put("intensity", min(optDouble("intensity", 0.0), 0.14))
-            put("originalLevel", min(optDouble("originalLevel", 1.0), 0.82))
-        }
-
-        profile.getJSONObject("bass").apply {
-            if (severity >= 2) put("enable", false)
-            put("gain", min(optDouble("gain", 0.0), 0.14))
-        }
-
-        profile.getJSONObject("bassMono").apply {
-            if (severity >= 1) put("enable", false)
-            put("gain", min(optDouble("gain", 0.0), 0.12))
-        }
-
-        profile.getJSONObject("clarity").apply {
-            put("gain", min(optDouble("gain", 0.0), 0.24))
+        if (lowSeverity > 0) {
+            profile.getJSONObject("psychoacousticBass").apply {
+                put("enable", false)
+                put("intensity", 0.0)
+            }
+            profile.getJSONObject("bass").apply {
+                put("enable", false)
+                put("gain", 0.0)
+            }
+            profile.getJSONObject("bassMono").apply {
+                put("enable", false)
+                put("gain", 0.0)
+            }
         }
 
         profile.getJSONObject("playbackGainControl").apply {
-            put("maxGain", min(optDouble("maxGain", 1.0), 1.15))
-            put("strength", min(optDouble("strength", 0.0), 0.75))
+            put("maxGain", min(optDouble("maxGain", 1.0), if (severity >= 2) 1.05 else 1.12))
+            put("strength", min(optDouble("strength", 0.0), if (severity >= 2) 0.55 else 0.70))
         }
 
         profile.getJSONObject("lufs").apply {
-            put("maxGain", min(optDouble("maxGain", 0.0), 1.0))
+            put("maxGain", min(optDouble("maxGain", 0.0), if (severity >= 2) 0.6 else 0.9))
             if (severity >= 2 && options.effectiveScene != Scene.Night) {
-                put("target", min(optDouble("target", -18.0), -16.0))
+                put("target", min(optDouble("target", -18.0), -17.0))
             }
+        }
+
+        fun appendDynamicProtection(
+            frequency: Int,
+            q: Double,
+            gainDb: Double,
+            thresholdDb: Double,
+            attackMs: Double,
+            releaseMs: Double,
+            filterType: Int,
+        ) {
+            val dyn = profile.getJSONObject("dynamicEq")
+            val wasEnabled = dyn.optBoolean("enable", false)
+            val freqs = if (wasEnabled) dyn.getJSONArray("freqs") else JSONArray()
+            val qs = if (wasEnabled) dyn.getJSONArray("qs") else JSONArray()
+            val gains = if (wasEnabled) dyn.getJSONArray("gains") else JSONArray()
+            val thresholds = if (wasEnabled) dyn.getJSONArray("thresholds") else JSONArray()
+            val attacks = if (wasEnabled) dyn.getJSONArray("attacks") else JSONArray()
+            val releases = if (wasEnabled) dyn.getJSONArray("releases") else JSONArray()
+            val types = if (wasEnabled) dyn.getJSONArray("filterTypes") else JSONArray()
+
+            if (freqs.length() >= 10) return
+
+            freqs.put(frequency)
+            qs.put(q)
+            gains.put(gainDb)
+            thresholds.put(thresholdDb)
+            attacks.put(attackMs)
+            releases.put(releaseMs)
+            types.put(filterType)
+
+            dyn.put("enable", true)
+            dyn.put("bandCount", freqs.length())
+            dyn.put("freqs", freqs)
+            dyn.put("qs", qs)
+            dyn.put("gains", gains)
+            dyn.put("thresholds", thresholds)
+            dyn.put("attacks", attacks)
+            dyn.put("releases", releases)
+            dyn.put("filterTypes", types)
+        }
+
+        if (lowSeverity > 0) {
+            appendDynamicProtection(
+                frequency = 220,
+                q = 0.72,
+                gainDb = if (lowSeverity >= 2) -5.0 else -3.0,
+                thresholdDb = -20.0,
+                attackMs = 4.0,
+                releaseMs = 140.0,
+                filterType = 1,
+            )
+        }
+
+        if (highSeverity > 0) {
+            appendDynamicProtection(
+                frequency = 5200,
+                q = 0.80,
+                gainDb = if (highSeverity >= 2) -4.0 else -2.5,
+                thresholdDb = -18.0,
+                attackMs = 3.0,
+                releaseMs = 90.0,
+                filterType = 2,
+            )
         }
 
         return plan.copy(
