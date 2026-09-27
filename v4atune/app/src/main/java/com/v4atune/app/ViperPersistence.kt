@@ -33,6 +33,32 @@ class ViperPersistence(private val context: Context) {
     suspend fun sync(plan: Plan) = withContext(Dispatchers.IO) {
         val paths = locate()
         backup(paths)
+        stageWithPaths(paths, plan)
+    }
+
+    /**
+     * RAW calibration must not traverse an existing ViPER AudioEffect.
+     * Force-stopping the manager releases both global and per-session effects,
+     * while leaving the native driver/module installed.
+     */
+    suspend fun beginRawBypass() = withContext(Dispatchers.IO) {
+        stopManager()
+        delay(450)
+    }
+
+    /**
+     * Persist a calibration plan without changing the user's routing policy.
+     * In particular this never changes master_enable, global_mode or auto_start.
+     */
+    suspend fun stage(plan: Plan) = withContext(Dispatchers.IO) {
+        stageWithPaths(locate(), plan)
+    }
+
+    suspend fun resumeManager() = withContext(Dispatchers.IO) {
+        launchManager()
+    }
+
+    private suspend fun stageWithPaths(paths: Paths, plan: Plan) {
         stopManager()
         try {
             paths.dataStore?.let { patchDataStore(it, plan) }
@@ -160,11 +186,9 @@ class ViperPersistence(private val context: Context) {
         )
         check(copy.ok) { "无法读取 ViPER DataStore: " + copy.output }
 
-        val changes = linkedMapOf<String, PrefValue>(
-            "master_enable" to PrefValue.Bool(true),
-            "global_mode" to PrefValue.Bool(true),
-            "auto_start" to PrefValue.Bool(true),
-        )
+        // Do not touch master_enable / global_mode / auto_start here.
+        // Those are routing/user-policy preferences, not DSP parameters.
+        val changes = linkedMapOf<String, PrefValue>()
 
         plan.commands.groupBy { it.param }.forEach { (param, commands) ->
             if (commands.size == 1 && commands[0].value.index == -1) {
@@ -288,11 +312,18 @@ class ViperPersistence(private val context: Context) {
     }
 
     private suspend fun launchManager() {
-        RootShell.exec(
-            "am start -n " + managerPkg + "/.ui.MainActivity >/dev/null 2>&1 || " +
-                "monkey -p " + managerPkg + " 1 >/dev/null 2>&1",
+        val service = RootShell.exec(
+            "am start-foreground-service -n " + managerPkg +
+                "/.service.ViperService -a " +
+                "com.llsl.viper4android.service.START >/dev/null 2>&1",
         )
-        delay(1100)
+        if (!service.ok) {
+            RootShell.exec(
+                "am start -n " + managerPkg + "/.ui.MainActivity >/dev/null 2>&1 || " +
+                    "monkey -p " + managerPkg + " 1 >/dev/null 2>&1",
+            )
+        }
+        delay(900)
     }
 }
 
