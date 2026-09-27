@@ -42,6 +42,8 @@ class ViperPersistence(private val context: Context) {
      * while leaving the native driver/module installed.
      */
     suspend fun beginRawBypass() = withContext(Dispatchers.IO) {
+        val paths = locate()
+        backup(paths)
         stopManager()
         delay(450)
     }
@@ -52,6 +54,22 @@ class ViperPersistence(private val context: Context) {
      */
     suspend fun stage(plan: Plan) = withContext(Dispatchers.IO) {
         stageWithPaths(locate(), plan)
+    }
+
+    /**
+     * Commit from the calibration bypass state. The manager is intentionally kept
+     * stopped during all measurements so it cannot create Global/Per-App effects
+     * that contaminate the exact-session verifier.
+     */
+    suspend fun commitFromBypass(plan: Plan) = withContext(Dispatchers.IO) {
+        val paths = locate()
+        try {
+            paths.dataStore?.let { patchDataStore(it, plan) }
+            paths.roomDb?.let { patchRoom(it, plan) }
+            installBulkFiles(paths, plan)
+        } finally {
+            launchManager()
+        }
     }
 
     suspend fun resumeManager() = withContext(Dispatchers.IO) {
