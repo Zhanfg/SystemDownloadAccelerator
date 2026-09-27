@@ -385,8 +385,8 @@ object SceneDspProfiles {
         ),
         loudness = neutralLoudness.copy(
             baseHeadroomDb = 1.3,
-            playbackStrength = 0.92,
-            playbackMaxGain = 1.40,
+            playbackStrength = 0.75,
+            playbackMaxGain = 1.20,
             lufsTarget = -19.0,
             lufsMaxGain = 1.5,
             lufsSpeed = 1,
