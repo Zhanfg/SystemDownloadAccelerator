@@ -46,10 +46,19 @@ class ViperPersistence(private val context: Context) {
     suspend fun beginRawBypass() = withContext(Dispatchers.IO) {
         val paths = locate()
         backup(paths)
-        armRecoveryWatchdog()
-        stopManager()
-        heartbeatRecovery()
-        delay(450)
+
+        // Keep the manager process alive. ViperService's temporary master toggle
+        // releases global + per-session effects without touching persisted prefs.
+        launchManager()
+        val toggle = RootShell.exec(
+            "am start-foreground-service -n " + managerPkg +
+                "/.service.ViperService -a " +
+                "com.llsl.viper4android.service.TOGGLE_MASTER --ez " +
+                "com.llsl.viper4android.service.EXTRA_MASTER_ENABLED false " +
+                ">/dev/null 2>&1",
+        )
+        check(toggle.ok) { "无法临时旁路 ViPER: " + toggle.output }
+        delay(500)
     }
 
     suspend fun heartbeatRecovery() = withContext(Dispatchers.IO) {
@@ -61,10 +70,13 @@ class ViperPersistence(private val context: Context) {
     }
 
     suspend fun ensureRecoveryActive() = withContext(Dispatchers.IO) {
-        val r = RootShell.exec("test -f " + RootShell.quote(watchdogMark) + " && echo armed")
-        check(r.output.contains("armed")) {
-            "校准恢复 watchdog 已触发；ViPER 管理器已自动恢复，本轮校准已终止。"
-        }
+        // During normal RAW / exact-session measurement no watchdog is needed,
+        // because the manager process remains alive. The marker exists only for
+        // the final stop/write/restart critical section.
+        val r = RootShell.exec(
+            "if [ -f " + RootShell.quote(watchdogMark) + " ]; then echo armed; else echo idle; fi",
+        )
+        check(r.ok) { "无法读取恢复 watchdog 状态: " + r.output }
     }
 
     /**
@@ -82,16 +94,31 @@ class ViperPersistence(private val context: Context) {
      */
     suspend fun commitFromBypass(plan: Plan) = withContext(Dispatchers.IO) {
         val paths = locate()
+
+        // Only the final file transaction needs the manager process stopped.
+        // Arm the independent watchdog immediately before this short critical section.
+        armRecoveryWatchdog()
+        stopManager()
+        heartbeatRecovery()
         try {
             paths.dataStore?.let { patchDataStore(it, plan) }
+            heartbeatRecovery()
             paths.roomDb?.let { patchRoom(it, plan) }
+            heartbeatRecovery()
             installBulkFiles(paths, plan)
         } finally {
             launchManager()
         }
     }
 
+    /**
+     * Restore the service from persisted user preferences. This undoes the
+     * temporary in-memory master bypass without changing master/global/autostart.
+     */
     suspend fun resumeManager() = withContext(Dispatchers.IO) {
+        armRecoveryWatchdog()
+        stopManager()
+        heartbeatRecovery()
         launchManager()
     }
 
