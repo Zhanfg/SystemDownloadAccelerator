@@ -164,19 +164,37 @@ object TuningPlanner {
             convolverOn -> spec.fir.eqShare
             else -> 1.0
         }
-        val eqLevels = DoubleArray(eqFreqs.size) { i ->
+        val eqShapeLevels = DoubleArray(eqFreqs.size) { i ->
             (interpolate(denseFreqs, afterDdc, eqFreqs[i]) * eqShare)
                 .coerceIn(-7.0, 1.5)
         }.smooth3()
 
         val eqApprox = DoubleArray(denseFreqs.size) { i ->
-            if (eqOn) interpolate(eqFreqs, eqLevels, denseFreqs[i]) else 0.0
+            if (eqOn) interpolate(eqFreqs, eqShapeLevels, denseFreqs[i]) else 0.0
         }
-        val firDb = DoubleArray(denseFreqs.size) { i ->
+
+        val firShapeDb = DoubleArray(denseFreqs.size) { i ->
             if (convolverOn) {
                 (afterDdc[i] - eqApprox[i]).coerceIn(spec.fir.maxCutDb, spec.fir.maxBoostDb)
             } else 0.0
         }.smooth3()
+
+        // Reserve headroom before the nonlinear stages. The driver limiter is at the
+        // end of the chain, so it cannot prevent upstream bass/exciter/clarity stages
+        // from saturating. Keep the IIR correction shape, but shift it downward.
+        val eqShift = if (eqOn) {
+            max(0.0, (eqShapeLevels.maxOrNull() ?: 0.0) + spec.safety.preHeadroomDb)
+        } else 0.0
+        val eqLevels = DoubleArray(eqShapeLevels.size) { i ->
+            (eqShapeLevels[i] - eqShift).coerceIn(-12.0, 0.0)
+        }
+
+        // FIR is also kept cut-dominant so it cannot erase the reserved pre-DSP
+        // headroom created by the IIR stage.
+        val firPositive = max(0.0, firShapeDb.maxOrNull() ?: 0.0)
+        val firDb = DoubleArray(firShapeDb.size) { i ->
+            (firShapeDb[i] - firPositive).coerceIn(spec.fir.maxCutDb, 0.0)
+        }
 
         val kernel = if (convolverOn) {
             minimumPhaseFir(
@@ -193,8 +211,8 @@ object TuningPlanner {
         val pan = channelPan(metrics.channelDeltaDb)
         val headroomDb = (
             spec.loudness.baseHeadroomDb +
-                if (psychoOn || bassOn || spectrumOn || clarityOn) 0.6 else 0.0 +
-                if (fieldOn || diffOn || reverbOn) 0.3 else 0.0
+                if (psychoOn || bassOn || spectrumOn || clarityOn) 0.4 else 0.0 +
+                if (fieldOn || diffOn || reverbOn) 0.2 else 0.0
             ).coerceIn(0.8, 3.5)
 
         val profile = JSONObject().apply {
@@ -202,7 +220,7 @@ object TuningPlanner {
             put("name", "V4ATune " + options.scene.label + " · " + options.target.label)
             put("createdAt", System.currentTimeMillis())
             put("masterLimiter", obj(
-                "threshold", 10.0.pow(-1.0 / 20.0),
+                "threshold", 10.0.pow(spec.safety.limiterCeilingDb / 20.0),
                 "outputVolume", 10.0.pow(-headroomDb / 20.0),
                 "channelPan", pan,
             ))
@@ -224,7 +242,10 @@ object TuningPlanner {
             put("spectrumExtension", obj(
                 "enable", spectrumOn,
                 "strength", if (metrics.highDeficitDb > 5.0) 6200 else 7600,
-                "exciter", if (metrics.highDeficitDb > 5.0) 0.55 else 0.28,
+                "exciter", min(
+                    spec.safety.maxSpectrumExciter,
+                    if (metrics.highDeficitDb > 5.0) 0.24 else 0.16,
+                ),
             ))
             put("equalizer", obj(
                 "enable", eqOn,
@@ -291,12 +312,8 @@ object TuningPlanner {
                     0.18 + max(0.0, metrics.lowDeficitDb - 4.0) * 0.025 +
                         if (options.effectiveScene == Scene.Outdoor) 0.05 else 0.0
                     ).coerceIn(
-                        0.18,
-                        when {
-                            options.effectiveScene == Scene.Outdoor -> 0.46
-                            options.target == Target.Bass -> 0.50
-                            else -> 0.42
-                        },
+                        0.10,
+                        spec.safety.maxPsychoBassIntensity,
                     ),
                 "harmonicOrder", 3,
                 "originalLevel", 0.90,
@@ -305,26 +322,32 @@ object TuningPlanner {
                 "enable", bassOn,
                 "mode", 0,
                 "frequency", if (options.target == Target.Bass) 95 else 80,
-                "gain", if (options.target == Target.Bass) 0.80 else 0.55,
+                "gain", min(
+                    spec.safety.maxBassGain,
+                    if (options.target == Target.Bass) 0.35 else 0.24,
+                ),
                 "antiPop", true,
             ))
             put("bassMono", obj(
                 "enable", bassMonoOn,
                 "mode", 0,
                 "frequency", 90,
-                "gain", 0.55,
+                "gain", min(spec.safety.maxBassGain, 0.22),
                 "antiPop", true,
             ))
             put("clarity", obj(
                 "enable", clarityOn,
                 "mode", 0,
-                "gain", when (options.scene) {
-                    Scene.Voice -> 0.84
-                    Scene.Outdoor -> 0.72
-                    Scene.Night -> 0.68
-                    Scene.Game -> 0.62
-                    else -> if (options.target == Target.Vocal) 0.80 else 0.50
-                },
+                "gain", min(
+                    spec.safety.maxClarityGain,
+                    when (options.effectiveScene) {
+                        Scene.Voice -> 0.42
+                        Scene.Outdoor -> 0.40
+                        Scene.Night -> 0.34
+                        Scene.Game -> 0.36
+                        else -> if (options.target == Target.Vocal) 0.40 else 0.30
+                    },
+                ),
             ))
             put("cure", obj("enable", cureOn, "crossfeedPreset", 0))
             put("tubeSimulator", obj("enable", tubeOn))
@@ -577,7 +600,7 @@ object TuningPlanner {
         "kneeAuto", true,
         "knee", 0.0,
         "kneeMulti", 0.0,
-        "gainAuto", true,
+        "gainAuto", false,
         "gain", 0.0,
         "attackAuto", false,
         "attack", strategy.fetAttackSec,
@@ -606,7 +629,7 @@ object TuningPlanner {
         "crests", arr(List(5) { 0.100 }),
         "adapts", arr(List(5) { 2.0 }),
         "kneeAutos", arr(List(5) { true }),
-        "gainAutos", arr(List(5) { true }),
+        "gainAutos", arr(List(5) { false }),
         "attackAutos", arr(List(5) { false }),
         "releaseAutos", arr(List(5) { false }),
         "noClips", arr(List(5) { true }),
