@@ -35,7 +35,7 @@ class ScenePresetsTest {
         assertEquals(Policy.On, options.policies[Component.PlaybackGain])
         assertEquals(Policy.On, options.policies[Component.Lufs])
         assertEquals(Policy.On, options.policies[Component.MultibandCompressor])
-        assertEquals(Policy.On, options.policies[Component.PsychoBass])
+        assertEquals(Policy.Off, options.policies[Component.PsychoBass])
     }
 
     @Test
@@ -46,7 +46,7 @@ class ScenePresetsTest {
         assertEquals(Policy.On, options.policies[Component.FetCompressor])
         assertEquals(Policy.Off, options.policies[Component.Bass])
         assertEquals(Policy.Off, options.policies[Component.PsychoBass])
-        assertEquals(Policy.On, options.policies[Component.Clarity])
+        assertEquals(Policy.Off, options.policies[Component.Clarity])
     }
 
     @Test
@@ -170,6 +170,19 @@ class ScenePresetsTest {
         val outdoor = SceneDspProfiles.outdoor
         assertTrue(outdoor.loudness.playbackMaxGain <= 1.35)
         assertTrue(outdoor.loudness.lufsMaxGain <= 1.8)
+    }
+
+    @Test
+    fun automaticSpeakerScenesAvoidNonlinearSpectralEnhancers() {
+        Scene.entries.filter { it != Scene.Custom }.forEach { scene ->
+            val options = ScenePresets.apply(scene)
+            assertEquals(Policy.Off, options.policies[Component.SpeakerCorrection])
+            assertEquals(Policy.Off, options.policies[Component.Spectrum])
+            assertEquals(Policy.Off, options.policies[Component.PsychoBass])
+            assertEquals(Policy.Off, options.policies[Component.Bass])
+            assertEquals(Policy.Off, options.policies[Component.BassMono])
+            assertEquals(Policy.Off, options.policies[Component.Clarity])
+        }
     }
 
 }
