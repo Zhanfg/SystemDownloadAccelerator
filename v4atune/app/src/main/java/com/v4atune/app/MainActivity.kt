@@ -312,8 +312,9 @@ private fun TunePage(
 
         item {
             Text(
-                "测量链：20 Hz–20 kHz 指数扫频 → 稠密响应 → 31 段 IIR → FIR 残差 → 动态 EQ / DDC → " +
-                    "失真、声道与压缩探针 → 短扫频二次验证。游戏场景优先低延迟，会主动减少长卷积和延迟型处理。",
+                "测量链：RAW 基线先释放 ViPER AudioEffect，确认 processedFrames 不增长后再测；" +
+                    "随后写入校准结果，并严格沿用你现有的 Global / Per-App / 排除应用路由做二次验证。" +
+                    "V4ATune 不修改 Global Mode、主开关或自动启动。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
