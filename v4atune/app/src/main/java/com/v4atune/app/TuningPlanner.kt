@@ -800,8 +800,23 @@ object TuningPlanner {
             peak = max(peak, abs(v))
             out[i] = v.toFloat()
         }
-        if (peak > 0.95) {
-            val s = 0.95 / peak
+        // Peak-normalizing impulse taps is not enough: many sub-unity taps can
+        // still sum constructively and create >0 dB frequency-domain overshoot.
+        // The requested FIR curve is cut-dominant, so normalize the realized kernel
+        // by its actual maximum magnitude response instead.
+        val fr = DoubleArray(n)
+        val fi = DoubleArray(n)
+        for (i in out.indices) fr[i] = out[i].toDouble()
+        Acoustics.fft(fr, fi, false)
+        var maxMag = 0.0
+        for (k in 0..n / 2) {
+            val f = k * sampleRate.toDouble() / n
+            if (f in 20.0..20000.0) {
+                maxMag = max(maxMag, hypot(fr[k], fi[k]))
+            }
+        }
+        if (maxMag > 0.985) {
+            val s = 0.985 / maxMag
             for (i in out.indices) out[i] = (out[i] * s).toFloat()
         }
         return out
