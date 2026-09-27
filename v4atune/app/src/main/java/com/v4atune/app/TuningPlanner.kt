@@ -22,12 +22,12 @@ object TuningPlanner {
 
     fun metrics(m: Measurement, options: TuneOptions): TuneMetrics {
         val ref = reference(m)
-        val useful = m.dense.filter { it.frequency in 125.0..12000.0 && it.snrDb >= 12.0 }
+        val useful = m.dense.filter { it.frequency in 125.0..10000.0 && it.snrDb >= 12.0 }
         val deviations = useful.map { it.levelDb - ref - sceneTargetOffset(options, it.frequency) }
         val rms = sqrt(deviations.map { it * it }.average().takeIf { !it.isNaN() } ?: 0.0)
         val maxDev = deviations.maxOfOrNull { abs(it) } ?: 0.0
-        val low = deficit(m, ref, 80.0, 315.0, options)
-        val high = deficit(m, ref, 6300.0, 16000.0, options)
+        val low = deficit(m, ref, 125.0, 315.0, options)
+        val high = deficit(m, ref, 5000.0, 10000.0, options)
         val thd = Acoustics.median(m.distortion.map { it.thd })
         return TuneMetrics(
             responseRmsDb = rms,
@@ -60,7 +60,11 @@ object TuningPlanner {
             return enabled
         }
 
-        val speakerCorrection = decide(Component.SpeakerCorrection, true, "内置扬声器专用校正")
+        val speakerCorrection = decide(
+            Component.SpeakerCorrection,
+            false,
+            "驱动内置 SpeakerCorrection 是固定 80 Hz 高通 / 13.5 kHz 低通 / 420 Hz 带通，无法针对本机参数化；自动校准默认不用",
+        )
         val ddcOn = decide(Component.Ddc, false, "扬声器默认由 IIR/FIR 承担；DDC 仅在显式要求时加入")
         val convolverOn = decide(
             Component.Convolver,
@@ -76,24 +80,24 @@ object TuningPlanner {
         )
         val psychoOn = decide(
             Component.PsychoBass,
-            metrics.lowDeficitDb >= 4.0 || options.target == Target.Bass,
-            "低频下潜不足，优先用心理声学谐波而非危险低频暴力增益",
+            false,
+            "该部件通过生成低频谐波提升感知低音，会改变失真谱；内置扬声器默认不自动启用",
         )
         val bassOn = decide(
             Component.Bass,
-            options.target == Target.Bass && metrics.medianThd < 0.12 && metrics.lowDeficitDb < 10.0,
-            "低频失真余量允许轻度直接增强",
+            false,
+            "ViPER Bass 内部含低频叠加与软削波；内置扬声器默认只做线性/动态削减，不自动加低频",
         )
         val bassMonoOn = decide(Component.BassMono, false, "内置双扬声器默认保留声道低频信息")
         val spectrumOn = decide(
             Component.Spectrum,
-            metrics.highDeficitDb in 2.5..8.0 && metrics.medianThd < 0.15,
-            "高频衰减明显但仍有失真余量",
+            false,
+            "Spectrum Extension 会生成高频谐波；手机扬声器与内置麦克风的高频端不作为自动增强依据",
         )
         val clarityOn = decide(
             Component.Clarity,
-            options.target == Target.Vocal && metrics.highDeficitDb >= 1.5,
-            "人声目标且高频偏暗",
+            false,
+            "Clarity 的 Natural 模式不是纯线性 EQ；默认由 31 段 EQ / Dynamic EQ 完成人声清晰度校正",
         )
         val imagerOn = decide(
             Component.StereoImager,
@@ -136,10 +140,10 @@ object TuningPlanner {
             val relative = p.levelDb - ref
             var correction = sceneTargetOffset(options, p.frequency) - relative
             val maxBoost = when {
-                p.frequency < 80.0 -> 0.0
-                p.frequency > 14000.0 -> 0.0
-                p.frequency > 8000.0 -> 0.7
-                else -> 1.8
+                p.frequency < 125.0 -> 0.0
+                p.frequency > 10000.0 -> 0.0
+                p.frequency > 8000.0 -> 0.35
+                else -> 1.2
             }
             if (p.snrDb < 12.0) correction = 0.0
             correction.coerceIn(-7.0, maxBoost)
@@ -535,8 +539,8 @@ object TuningPlanner {
         )
 
     private fun reliable(m: Measurement): Boolean =
-        m.dense.count { it.frequency in 80.0..16000.0 && it.snrDb >= 12.0 } >=
-            (m.dense.count { it.frequency in 80.0..16000.0 } * 0.7).toInt()
+        m.dense.count { it.frequency in 125.0..10000.0 && it.snrDb >= 12.0 } >=
+            (m.dense.count { it.frequency in 125.0..10000.0 } * 0.75).toInt()
 
     private fun deficit(
         m: Measurement,
@@ -596,7 +600,7 @@ object TuningPlanner {
 
         for (i in 2 until a.size - 2) {
             val p = a[i]
-            if (p.frequency !in 100.0..14000.0 || p.snrDb < 12.0) continue
+            if (p.frequency !in 125.0..10000.0 || p.snrDb < 12.0) continue
 
             val excess = p.levelDb - ref - sceneTargetOffset(options, p.frequency)
             val neighbors = listOf(i - 2, i - 1, i + 1, i + 2)
