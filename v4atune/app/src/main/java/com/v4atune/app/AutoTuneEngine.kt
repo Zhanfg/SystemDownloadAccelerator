@@ -56,6 +56,8 @@ class AutoTuneEngine(private val context: Context) {
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, testVolume, 0)
             delay(250)
 
+            val rawFramesBefore = ViperControl.status()?.processedFrames
+
             progress("第一次快速全频测量", 0.14f)
             val calibrator = SweepCalibrator(context)
             val first = calibrator.measure(options.mode, false) {
@@ -67,6 +69,13 @@ class AutoTuneEngine(private val context: Context) {
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, stressVolume, 0)
             delay(150)
             val baselineStress = calibrator.distortionStress(first.sampleRate)
+
+            val rawFramesAfter = ViperControl.status()?.processedFrames
+            if (rawFramesBefore != null && rawFramesAfter != null) {
+                check(rawFramesAfter == rawFramesBefore) {
+                    "RAW 旁路失败：基线测量期间 ViPER processedFrames 仍在增加；停止校准，避免用被 ViPER 污染的频响反推 ViPER。"
+                }
+            }
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, testVolume, 0)
             delay(150)
 
