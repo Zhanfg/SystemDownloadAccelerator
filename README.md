@@ -1,10 +1,10 @@
-# SystemDownloadAccelerator
+# SDA
 
 LSPosed module that accelerates Android's system DownloadManager while keeping
 Android's own download records, destination handling, progress, pause/cancel,
 resume, retry and completion semantics.
 
-## Current architecture — 0.4
+## Current architecture — 0.5
 
 The project no longer depends on hooking private `DownloadThread.transferData()`
 implementations.
@@ -104,13 +104,13 @@ CI currently uses:
 gradle :app:testDebugUnitTest :app:assembleDebug
 ```
 
-GitHub Actions artifact: `SystemDownloadAccelerator-debug`.
+GitHub Actions artifact: `SDA-debug`.
 
 ## One-tap diagnostics
 
 The app includes a `生成诊断日志` button. It writes a shareable text report to:
 
-`Download/SystemDownloadAccelerator/`
+`Download/SDA/`
 
 The report includes module/framework versions, scope and running targets, self-test
 events, filtered Android logcat and (when root access is available) LSPosed module
@@ -232,3 +232,11 @@ target as up to date but the injected runtime still belongs to an older build.
 ### Startup drain warmup
 
 Adaptive concurrency waits for the native DownloadManager consumer to establish a real delivered-throughput baseline before making ramp/hold decisions. Startup zero-drain samples are non-terminal, and post-ramp evaluation waits for three steady delivered samples. A stalled native consumer with buffered range data is reclaimed after a timeout so cancelled OEM DownloadProvider sessions cannot retain reorder-cache workers indefinitely.
+
+
+## Release identity
+
+- app name: `SDA`
+- Android applicationId: `dev.axym.sda`
+- internal Java namespace remains unchanged for the 0.5.0 release to minimize release risk
+- stable version: `0.5.0` (`versionCode 27`)

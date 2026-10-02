@@ -223,9 +223,9 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        root.addView(text("System Download Accelerator", 27, TEXT, true));
+        root.addView(text("SDA", 27, TEXT, true));
 
-        TextView subtitle = text("系统下载加速 · LSPosed API 102", 14, MUTED, false);
+        TextView subtitle = text("System Download Accelerator · LSPosed API 102", 14, MUTED, false);
         LinearLayout.LayoutParams subtitleLp = wrap();
         subtitleLp.topMargin = dp(4);
         root.addView(subtitle, subtitleLp);

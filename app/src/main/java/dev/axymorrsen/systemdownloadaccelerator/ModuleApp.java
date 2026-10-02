@@ -11,7 +11,7 @@ import io.github.libxposed.service.XposedServiceHelper;
 /** Owns the single libxposed service listener for the module app process. */
 public final class ModuleApp extends Application
         implements XposedServiceHelper.OnServiceListener {
-    private static final String TAG = "SysDlAccelApp";
+    private static final String TAG = "SDAApp";
     private static final CopyOnWriteArrayList<Runnable> LISTENERS =
             new CopyOnWriteArrayList<>();
 

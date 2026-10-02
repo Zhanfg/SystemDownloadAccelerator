@@ -177,7 +177,7 @@ final class RealDownloadBenchmark {
             DownloadManager.Request request =
                     new DownloadManager.Request(uri)
                             .setTitle(
-                                    "System Download Accelerator benchmark")
+                                    "SDA benchmark")
                             .setDescription(
                                     "Real-network adaptive concurrency test")
                             .setAllowedOverMetered(permitMeteredDownload)

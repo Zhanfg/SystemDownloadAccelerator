@@ -10,11 +10,11 @@ android {
     compileSdkMinor = 0
 
     defaultConfig {
-        applicationId = "dev.axymorrsen.systemdownloadaccelerator"
+        applicationId = "dev.axym.sda"
         minSdk = 26
         targetSdk = 37
-        versionCode = 26
-        versionName = "0.5.0-alpha10"
+        versionCode = 27
+        versionName = "0.5.0"
         buildConfigField("String", "BUILD_ID", "\"$buildId\"")
     }
 

@@ -43,7 +43,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
  * replaces only the response InputStream with the independent range core.
  */
 public final class AcceleratorModule extends XposedModule {
-    private static final String TAG = "SysDlAccel";
+    private static final String TAG = "SDA";
     private final String generationToken =
             Long.toUnsignedString(
                     android.os.SystemClock.elapsedRealtimeNanos(),

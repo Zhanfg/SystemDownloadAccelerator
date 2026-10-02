@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">System Download Accelerator</string>
-    <string name="module_description">Android system DownloadManager accelerator with LSPosed API 102 runtime diagnostics.</string>
+    <string name="app_name">SDA</string>
+    <string name="module_description">SDA · Android DownloadManager accelerator · LSPosed API 102.</string>
 </resources>

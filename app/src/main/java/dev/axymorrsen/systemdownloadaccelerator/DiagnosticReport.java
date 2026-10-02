@@ -75,7 +75,7 @@ final class DiagnosticReport {
             String selfTestStatus) {
         StringBuilder out = new StringBuilder(64 * 1024);
 
-        appendHeader(out, "SystemDownloadAccelerator diagnostics");
+        appendHeader(out, "SDA diagnostics");
         append(out, "generated_at", timestamp());
         append(out, "module_version", BuildConfig.VERSION_NAME);
         append(out, "module_version_code", BuildConfig.VERSION_CODE);
@@ -185,13 +185,13 @@ final class DiagnosticReport {
 
         appendHeader(out, "LSPosed module log (root best-effort)");
         CommandResult lsp = runRoot(
-                "grep -R -a -E 'SysDlAccel|systemdownloadaccelerator|SystemDownloadAccelerator' /data/adb/lspd/log 2>/dev/null | tail -n 600",
+                "grep -R -a -E 'SDA|SysDlAccel|systemdownloadaccelerator|SystemDownloadAccelerator' /data/adb/lspd/log 2>/dev/null | tail -n 600",
                 8);
         appendCommand(out, "lspd_log", lsp);
 
         appendHeader(out, "Package snapshot");
         CommandResult pkg = runRoot(
-                "dumpsys package dev.axymorrsen.systemdownloadaccelerator 2>/dev/null | grep -E 'versionName=|versionCode=|enabled=|MainActivity'",
+                "dumpsys package " + BuildConfig.APPLICATION_ID + " 2>/dev/null | grep -E 'versionName=|versionCode=|enabled=|MainActivity'",
                 5);
         appendCommand(out, "package", pkg);
 
@@ -200,7 +200,7 @@ final class DiagnosticReport {
     }
 
     private static Result saveReport(Context context, String report) throws Exception {
-        String fileName = "SysDlDiag_" + fileTimestamp() + ".txt";
+        String fileName = "SDA-Diag_" + fileTimestamp() + ".txt";
         byte[] bytes = report.getBytes(StandardCharsets.UTF_8);
 
         if (Build.VERSION.SDK_INT >= 29) {
@@ -210,7 +210,7 @@ final class DiagnosticReport {
             values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
             values.put(
                     MediaStore.Downloads.RELATIVE_PATH,
-                    Environment.DIRECTORY_DOWNLOADS + "/SystemDownloadAccelerator");
+                    Environment.DIRECTORY_DOWNLOADS + "/SDA");
             values.put(MediaStore.Downloads.IS_PENDING, 1);
 
             Uri uri = resolver.insert(
@@ -239,7 +239,7 @@ final class DiagnosticReport {
 
             return new Result(
                     true,
-                    "Download/SystemDownloadAccelerator/" + fileName,
+                    "Download/SDA/" + fileName,
                     uri,
                     null);
         }
@@ -248,7 +248,7 @@ final class DiagnosticReport {
         if (root == null) {
             throw new IllegalStateException("external Downloads unavailable");
         }
-        File dir = new File(root, "SystemDownloadAccelerator");
+        File dir = new File(root, "SDA");
         if (!dir.exists() && !dir.mkdirs()) {
             throw new IllegalStateException("cannot create diagnostics directory");
         }

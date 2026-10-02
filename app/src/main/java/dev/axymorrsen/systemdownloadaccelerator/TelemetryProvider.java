@@ -23,7 +23,7 @@ import java.util.Set;
  */
 public final class TelemetryProvider extends ContentProvider {
     static final String AUTHORITY =
-            "dev.axymorrsen.systemdownloadaccelerator.telemetry";
+            BuildConfig.APPLICATION_ID + ".telemetry";
     static final Uri EVENTS_URI =
             Uri.parse("content://" + AUTHORITY + "/events");
 
@@ -32,7 +32,7 @@ public final class TelemetryProvider extends ContentProvider {
 
     private static final Set<String> ALLOWED_PACKAGES =
             new HashSet<>(Arrays.asList(
-                    "dev.axymorrsen.systemdownloadaccelerator",
+                    BuildConfig.APPLICATION_ID,
                     "com.android.providers.downloads",
                     "com.android.providers.downloads.ui",
                     "com.android.systemui"));
@@ -211,6 +211,6 @@ public final class TelemetryProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
-        return "vnd.android.cursor.dir/vnd.sysdl.telemetry";
+        return "vnd.android.cursor.dir/vnd.sda.telemetry";
     }
 }

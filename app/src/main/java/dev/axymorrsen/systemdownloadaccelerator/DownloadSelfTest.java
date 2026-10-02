@@ -89,7 +89,7 @@ final class DownloadSelfTest {
 
             Uri uri = Uri.parse("http://localhost:" + port + "/probe.bin");
             DownloadManager.Request request = new DownloadManager.Request(uri)
-                    .setTitle("System Download Accelerator self-test")
+                    .setTitle("SDA self-test")
                     .setDescription("16 MiB local segmented DownloadProvider probe")
                     .setAllowedOverMetered(true)
                     .setAllowedOverRoaming(true)

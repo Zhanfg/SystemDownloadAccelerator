@@ -13,7 +13,7 @@ import android.os.SystemClock;
  */
 final class EngineTelemetry {
     static final String ACTION =
-            "dev.axymorrsen.systemdownloadaccelerator.ENGINE_EVENT";
+            BuildConfig.APPLICATION_ID + ".ENGINE_EVENT";
     static final String EXTRA_PHASE = "phase";
     static final String EXTRA_DETAIL = "detail";
     static final String EXTRA_WHEN = "when";
@@ -42,7 +42,7 @@ final class EngineTelemetry {
 
         try {
             Intent intent = new Intent(ACTION)
-                    .setPackage("dev.axymorrsen.systemdownloadaccelerator")
+                    .setPackage(BuildConfig.APPLICATION_ID)
                     .putExtra(EXTRA_PHASE, safePhase)
                     .putExtra(EXTRA_DETAIL, safeDetail)
                     .putExtra(EXTRA_WHEN, when);
