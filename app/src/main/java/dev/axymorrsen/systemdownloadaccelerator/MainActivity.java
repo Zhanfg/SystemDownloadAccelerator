@@ -1,6 +1,8 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -8,12 +10,14 @@ import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.net.Uri;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -46,6 +50,7 @@ import io.github.libxposed.service.XposedService;
  * live processes. DownloadProvider and Downloads UI are allowed to be dormant.
  */
 public final class MainActivity extends Activity {
+    private static final int REQUEST_POST_NOTIFICATIONS = 8201;
     private static final int BG = Color.rgb(245, 246, 250);
     private static final int CARD = Color.WHITE;
     private static final int TEXT = Color.rgb(28, 31, 38);
@@ -79,6 +84,8 @@ public final class MainActivity extends Activity {
     private Button diagnosticButton;
     private TextView diagnosticStatus;
     private Button refreshButton;
+    private TextView liveUpdateStatus;
+    private Button liveUpdateSettingsButton;
     private boolean engineReceiverRegistered;
     private final AtomicBoolean providerReloadInFlight =
             new AtomicBoolean(false);
@@ -145,6 +152,8 @@ public final class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         setContentView(buildUi());
+        requestNotificationPermissionIfNeeded();
+        refreshLiveUpdateState();
         ModuleApp.addListener(serviceListener);
         registerEngineReceiver();
         loadPersistedEvents();
@@ -155,7 +164,22 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         loadPersistedEvents();
+        refreshLiveUpdateState();
         refresh();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode,
+            String[] permissions,
+            int[] grantResults) {
+        super.onRequestPermissionsResult(
+                requestCode,
+                permissions,
+                grantResults);
+        if (requestCode == REQUEST_POST_NOTIFICATIONS) {
+            refreshLiveUpdateState();
+        }
     }
 
     @Override
@@ -173,6 +197,123 @@ public final class MainActivity extends Activity {
             benchmarkSession = null;
         }
         super.onDestroy();
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < 33) {
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        try {
+            requestPermissions(
+                    new String[]{
+                            Manifest.permission.POST_NOTIFICATIONS
+                    },
+                    REQUEST_POST_NOTIFICATIONS);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void refreshLiveUpdateState() {
+        if (liveUpdateStatus == null
+                || liveUpdateSettingsButton == null) {
+            return;
+        }
+
+        NotificationManager manager =
+                getSystemService(NotificationManager.class);
+        boolean runtimeGranted =
+                Build.VERSION.SDK_INT < 33
+                        || checkSelfPermission(
+                                Manifest.permission.POST_NOTIFICATIONS)
+                        == PackageManager.PERMISSION_GRANTED;
+        boolean notificationsEnabled =
+                manager != null
+                        && runtimeGranted
+                        && manager.areNotificationsEnabled();
+
+        Boolean promotionAllowed =
+                manager == null
+                        ? null
+                        : queryPromotedNotificationPermission(manager);
+
+        String promotedText =
+                promotionAllowed == null
+                        ? "系统接口不可用"
+                        : (promotionAllowed
+                                ? "已允许"
+                                : "未允许");
+
+        liveUpdateStatus.setText(
+                "普通通知："
+                        + (notificationsEnabled ? "已允许" : "未允许")
+                        + "\n实时通知提升："
+                        + promotedText
+                        + "\n发布通道："
+                        + LiveUpdatePublisher.CHANNEL_ID);
+        liveUpdateStatus.setTextColor(
+                notificationsEnabled
+                        && Boolean.TRUE.equals(promotionAllowed)
+                        ? GREEN
+                        : AMBER);
+
+        liveUpdateSettingsButton.setText(
+                notificationsEnabled
+                        ? "打开实时通知 / 流体云设置"
+                        : "授予通知权限");
+    }
+
+    private Boolean queryPromotedNotificationPermission(
+            NotificationManager manager) {
+        if (Build.VERSION.SDK_INT < 36) {
+            return null;
+        }
+        try {
+            java.lang.reflect.Method method =
+                    NotificationManager.class.getMethod(
+                            "canPostPromotedNotifications");
+            Object value = method.invoke(manager);
+            return value instanceof Boolean
+                    ? (Boolean) value
+                    : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private void openLiveUpdateSettings() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(
+                        Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestNotificationPermissionIfNeeded();
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 36) {
+            try {
+                Intent promoted = new Intent(
+                        "android.settings.APP_NOTIFICATION_PROMOTION_SETTINGS");
+                promoted.setData(
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(promoted);
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+
+        try {
+            Intent notifications =
+                    new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(
+                                    Settings.EXTRA_APP_PACKAGE,
+                                    getPackageName());
+            startActivity(notifications);
+        } catch (Throwable ignored) {
+        }
     }
 
     private void registerEngineReceiver() {
@@ -259,6 +400,44 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams frameworkLp = matchWrap();
         frameworkLp.topMargin = dp(12);
         root.addView(frameworkBox, frameworkLp);
+
+        TextView liveSection =
+                text("实时通知 / 流体云", 16, TEXT, true);
+        LinearLayout.LayoutParams liveSectionLp = wrap();
+        liveSectionLp.topMargin = dp(18);
+        liveSectionLp.bottomMargin = dp(10);
+        root.addView(liveSection, liveSectionLp);
+
+        LinearLayout liveBox = cardContainer();
+        TextView liveExplain = text(
+                "Android 16 动态通知与 ColorOS 流体云由 SDA 自己的通知身份发布。"
+                        + "需要同时允许普通通知与“实时通知/通知提升”；"
+                        + "下载进度仍由系统 DownloadProvider 提供。",
+                13,
+                MUTED,
+                false);
+        liveExplain.setLineSpacing(0f, 1.15f);
+        liveBox.addView(liveExplain);
+
+        liveUpdateStatus =
+                text("正在读取实时通知权限…", 13, MUTED, false);
+        LinearLayout.LayoutParams liveStatusLp = wrap();
+        liveStatusLp.topMargin = dp(10);
+        liveBox.addView(liveUpdateStatus, liveStatusLp);
+
+        liveUpdateSettingsButton = new Button(this);
+        liveUpdateSettingsButton.setText("打开实时通知设置");
+        liveUpdateSettingsButton.setTextSize(15);
+        liveUpdateSettingsButton.setAllCaps(false);
+        liveUpdateSettingsButton.setOnClickListener(
+                v -> openLiveUpdateSettings());
+        LinearLayout.LayoutParams liveButtonLp = matchWrap();
+        liveButtonLp.topMargin = dp(10);
+        liveBox.addView(
+                liveUpdateSettingsButton,
+                liveButtonLp);
+
+        root.addView(liveBox, matchWrap());
 
         TextView section = text("目标进程", 16, TEXT, true);
         LinearLayout.LayoutParams sectionLp = wrap();

@@ -333,3 +333,16 @@ Notification.ProgressStyle template instead of only a classic progress bar.
 ColorOS Fluid Cloud is a separate OPPO service-card/template platform. SDA does
 not hook its private SystemUI internals; the Android 16 live-update path is kept
 as the stable standards-first integration layer.
+
+
+### 0.8.0-alpha01-hotfix1 live-update identity fix
+
+The Android 16 / ColorOS live surface is now posted by the SDA application
+identity instead of the DownloadProvider process. The module declares both
+POST_NOTIFICATIONS and POST_PROMOTED_NOTIFICATIONS, mirrors provider progress
+through the existing UID-validated ContentProvider bridge, and keeps the
+provider-created control PendingIntents so Copy link / Pause / Cancel retain
+native DownloadProvider authority.
+
+The module UI now exposes notification-posting and promoted-notification
+eligibility and links directly to the platform/OEM promotion settings page.
