@@ -79,7 +79,7 @@ final class GlobalTransferGovernor {
         }
 
         int hostShare = sameHost <= 1
-                ? SHARED_HOST_WORKER_LIMIT
+                ? GLOBAL_WORKER_LIMIT
                 : Math.max(2, SHARED_HOST_WORKER_LIMIT / sameHost);
 
         return Math.max(

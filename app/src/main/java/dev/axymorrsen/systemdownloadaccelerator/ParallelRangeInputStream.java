@@ -775,10 +775,15 @@ final class ParallelRangeInputStream extends InputStream {
                                 "server returned empty range");
                     }
 
+                    long before = state.downloaded.get();
                     copyRangeBody(
                             state,
                             range.body,
                             maxThisResponse);
+                    if (state.downloaded.get() <= before) {
+                        throw new IOException(
+                                "range body made no progress");
+                    }
                     attempts = 0;
                 } catch (Throwable t) {
                     if (!RetryPolicy.shouldRetry(

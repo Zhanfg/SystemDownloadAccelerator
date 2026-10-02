@@ -45,6 +45,18 @@ public final class RetryPolicyTest {
     }
 
     @Test
+    public void integrityFailuresDoNotRetry() {
+        assertFalse(RetryPolicy.shouldRetry(
+                new IOException("ETag changed during range transfer"),
+                1,
+                5));
+        assertFalse(RetryPolicy.shouldRetry(
+                new IOException("bad Content-Range bytes 0-1/2"),
+                1,
+                5));
+    }
+
+    @Test
     public void retryAfterCanExtendLocalBackoff() {
         long delay = RetryPolicy.delayMillis(
                 1,

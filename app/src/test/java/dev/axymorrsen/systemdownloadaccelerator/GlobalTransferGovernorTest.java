@@ -15,7 +15,7 @@ public final class GlobalTransferGovernorTest {
     public void oneSessionCanUseItsRequestedBudget() {
         GlobalTransferGovernor.Lease lease =
                 GlobalTransferGovernor.register("example.com", 64);
-        assertEquals(48, lease.allowed(64));
+        assertEquals(64, lease.allowed(64));
         assertEquals(32, lease.allowed(32));
         lease.close();
     }

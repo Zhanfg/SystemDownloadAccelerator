@@ -20,7 +20,8 @@ final class RetryPolicy {
             return false;
         }
         if (error instanceof InterruptedException
-                || error instanceof InterruptedIOException) {
+                || error instanceof InterruptedIOException
+                || isIntegrityFailure(error)) {
             return false;
         }
 
