@@ -1,6 +1,8 @@
 package dev.axymorrsen.systemdownloadaccelerator;
 
 import android.app.Application;
+import android.app.Notification;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.net.Network;
 import android.os.Build;
@@ -81,6 +83,8 @@ public final class AcceleratorModule extends XposedModule {
             ConcurrentHashMap.newKeySet();
     private final Map<Object, Network> httpEngineNetworks =
             java.util.Collections.synchronizedMap(new WeakHashMap<>());
+    private final NotificationCleanupController notificationCleanup =
+            new NotificationCleanupController();
 
     private int providerHookCount;
     private int providerDeoptimizedCount;
@@ -160,6 +164,7 @@ public final class AcceleratorModule extends XposedModule {
 
     @Override
     public boolean onHotReloading(HotReloadingParam param) {
+        notificationCleanup.cancelPendingGenerationTasks();
         if (reloadState != null) {
             param.setSavedInstanceState(reloadState);
         }
@@ -346,6 +351,8 @@ public final class AcceleratorModule extends XposedModule {
         int networkHooks = installNetworkOpenHooks(processContext);
         int urlHooks = installUrlOpenHooks(processContext);
         int httpEngineHooks = installPlatformHttpEngineHooks(processContext);
+        int notificationHooks =
+                installNotificationCleanupHooks(processContext);
 
         int runHooks = 0;
         providerDeoptimizedCount = 0;
@@ -410,7 +417,11 @@ public final class AcceleratorModule extends XposedModule {
         }
 
         providerHookCount =
-                runHooks + networkHooks + urlHooks + httpEngineHooks;
+                runHooks
+                        + networkHooks
+                        + urlHooks
+                        + httpEngineHooks
+                        + notificationHooks;
 
         String summary =
                 "hooks=" + providerHookCount
@@ -418,6 +429,7 @@ public final class AcceleratorModule extends XposedModule {
                         + " network=" + networkHooks
                         + " url=" + urlHooks
                         + " httpEngine=" + httpEngineHooks
+                        + " notification=" + notificationHooks
                         + " deopt=" + providerDeoptimizedCount;
 
         emit(Log.INFO, "provider adapter installed " + summary);
@@ -602,6 +614,109 @@ public final class AcceleratorModule extends XposedModule {
                         ConnectionRegistry.leaveProviderExecution();
                     }
                 });
+    }
+
+    private int installNotificationCleanupHooks(
+            Context processContext) {
+        int count = 0;
+
+        Method[] methods = {
+                findPublicMethod(
+                        NotificationManager.class,
+                        "notify",
+                        int.class,
+                        Notification.class),
+                findPublicMethod(
+                        NotificationManager.class,
+                        "notify",
+                        String.class,
+                        int.class,
+                        Notification.class)
+        };
+
+        for (Method method : methods) {
+            if (method == null) continue;
+
+            try {
+                method.setAccessible(true);
+                String id =
+                        hookIdPrefix
+                                + "notification:"
+                                + method.toGenericString();
+                if (!hookedIds.add(id)) {
+                    continue;
+                }
+
+                hook(method)
+                        .setId(id)
+                        .setExceptionMode(
+                                XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+
+                            Object thisObject = chain.getThisObject();
+                            if (!(thisObject instanceof NotificationManager)) {
+                                return result;
+                            }
+
+                            List<Object> args = chain.getArgs();
+                            String tag = null;
+                            int notificationId;
+                            Notification notification;
+
+                            if (args.size() == 2
+                                    && args.get(0) instanceof Integer
+                                    && args.get(1) instanceof Notification) {
+                                notificationId = (Integer) args.get(0);
+                                notification = (Notification) args.get(1);
+                            } else if (args.size() == 3
+                                    && (args.get(0) == null
+                                    || args.get(0) instanceof String)
+                                    && args.get(1) instanceof Integer
+                                    && args.get(2) instanceof Notification) {
+                                tag = (String) args.get(0);
+                                notificationId = (Integer) args.get(1);
+                                notification = (Notification) args.get(2);
+                            } else {
+                                return result;
+                            }
+
+                            notificationCleanup.observePost(
+                                    processContext,
+                                    (NotificationManager) thisObject,
+                                    tag,
+                                    notificationId,
+                                    notification);
+                            return result;
+                        });
+                count++;
+            } catch (Throwable t) {
+                EngineTelemetry.emit(
+                        processContext,
+                        "HOOK_FAIL",
+                        "NotificationManager.notify: "
+                                + t.getClass().getSimpleName()
+                                + ": "
+                                + String.valueOf(t.getMessage()));
+            }
+        }
+
+        EngineTelemetry.emit(
+                processContext,
+                "NOTIF_CLEANUP_READY",
+                "hooks=" + count);
+        return count;
+    }
+
+    private static Method findPublicMethod(
+            Class<?> owner,
+            String name,
+            Class<?>... params) {
+        try {
+            return owner.getMethod(name, params);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private int installNetworkOpenHooks(Context processContext) {

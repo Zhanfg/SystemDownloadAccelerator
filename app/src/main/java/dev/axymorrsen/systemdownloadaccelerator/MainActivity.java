@@ -72,6 +72,10 @@ public final class MainActivity extends Activity {
     private CheckBox benchmarkVpnMeteredOverride;
     private Button benchmarkButton;
     private RealDownloadBenchmark.Session benchmarkSession;
+    private CheckBox notificationCleanupEnabled;
+    private EditText notificationCleanupDelay;
+    private TextView notificationCleanupStatus;
+    private Button notificationCleanupSave;
     private Button diagnosticButton;
     private TextView diagnosticStatus;
     private Button refreshButton;
@@ -385,6 +389,76 @@ public final class MainActivity extends Activity {
         benchmarkBox.addView(benchmarkButton, benchmarkButtonLp);
 
         root.addView(benchmarkBox, matchWrap());
+
+        TextView notificationSection = text("下载通知自动清理", 16, TEXT, true);
+        LinearLayout.LayoutParams notificationSectionLp = wrap();
+        notificationSectionLp.topMargin = dp(18);
+        notificationSectionLp.bottomMargin = dp(10);
+        root.addView(notificationSection, notificationSectionLp);
+
+        LinearLayout notificationBox = cardContainer();
+        TextView notificationExplain = text(
+                "下载成功或失败后先保留原生系统通知；到达延迟时间后，"
+                        + "优先触发 DownloadProvider 自己的删除动作，再取消通知兜底。"
+                        + "正在下载和等待网络的通知不会被清理。",
+                13, MUTED, false);
+        notificationExplain.setLineSpacing(0f, 1.15f);
+        notificationBox.addView(notificationExplain);
+
+        NotificationCleanupConfig notificationConfig =
+                NotificationCleanupConfig.readLocal(getApplicationContext());
+
+        notificationCleanupEnabled = new CheckBox(this);
+        notificationCleanupEnabled.setText("启用成功/失败通知自动清理");
+        notificationCleanupEnabled.setTextSize(13);
+        notificationCleanupEnabled.setTextColor(TEXT);
+        notificationCleanupEnabled.setChecked(notificationConfig.enabled);
+        LinearLayout.LayoutParams notificationEnabledLp = wrap();
+        notificationEnabledLp.topMargin = dp(8);
+        notificationBox.addView(
+                notificationCleanupEnabled,
+                notificationEnabledLp);
+
+        notificationCleanupDelay = new EditText(this);
+        notificationCleanupDelay.setHint("延迟秒数，5–3600");
+        notificationCleanupDelay.setSingleLine(true);
+        notificationCleanupDelay.setTextSize(14);
+        notificationCleanupDelay.setInputType(
+                InputType.TYPE_CLASS_NUMBER);
+        notificationCleanupDelay.setText(
+                String.valueOf(notificationConfig.delayMs / 1000L));
+        LinearLayout.LayoutParams notificationDelayLp = matchWrap();
+        notificationDelayLp.topMargin = dp(8);
+        notificationBox.addView(
+                notificationCleanupDelay,
+                notificationDelayLp);
+
+        notificationCleanupStatus = text(
+                "当前："
+                        + (notificationConfig.enabled ? "启用" : "关闭")
+                        + " · "
+                        + (notificationConfig.delayMs / 1000L)
+                        + " 秒后清理终态通知",
+                12, MUTED, false);
+        LinearLayout.LayoutParams notificationStatusLp = wrap();
+        notificationStatusLp.topMargin = dp(8);
+        notificationBox.addView(
+                notificationCleanupStatus,
+                notificationStatusLp);
+
+        notificationCleanupSave = new Button(this);
+        notificationCleanupSave.setText("保存通知清理设置");
+        notificationCleanupSave.setTextSize(15);
+        notificationCleanupSave.setAllCaps(false);
+        notificationCleanupSave.setOnClickListener(
+                v -> saveNotificationCleanupConfig());
+        LinearLayout.LayoutParams notificationSaveLp = matchWrap();
+        notificationSaveLp.topMargin = dp(10);
+        notificationBox.addView(
+                notificationCleanupSave,
+                notificationSaveLp);
+
+        root.addView(notificationBox, matchWrap());
 
         TextView diagSection = text("诊断日志", 16, TEXT, true);
         LinearLayout.LayoutParams diagSectionLp = wrap();
@@ -826,6 +900,56 @@ public final class MainActivity extends Activity {
             }
         }
         return null;
+    }
+
+    private void saveNotificationCleanupConfig() {
+        boolean enabled =
+                notificationCleanupEnabled != null
+                        && notificationCleanupEnabled.isChecked();
+
+        long seconds = 60L;
+        try {
+            String raw = notificationCleanupDelay == null
+                    ? ""
+                    : notificationCleanupDelay.getText()
+                            .toString()
+                            .trim();
+            if (!raw.isEmpty()) {
+                seconds = Long.parseLong(raw);
+            }
+        } catch (Throwable ignored) {
+            seconds = 60L;
+        }
+
+        long delayMs =
+                NotificationCleanupConfig.clamp(
+                        seconds * 1000L);
+        long normalizedSeconds = delayMs / 1000L;
+
+        NotificationCleanupConfig.writeLocal(
+                getApplicationContext(),
+                enabled,
+                delayMs);
+
+        if (notificationCleanupDelay != null) {
+            notificationCleanupDelay.setText(
+                    String.valueOf(normalizedSeconds));
+        }
+        if (notificationCleanupStatus != null) {
+            notificationCleanupStatus.setText(
+                    "当前："
+                            + (enabled ? "启用" : "关闭")
+                            + " · "
+                            + normalizedSeconds
+                            + " 秒后清理终态通知");
+            notificationCleanupStatus.setTextColor(GREEN);
+        }
+
+        EngineTelemetry.emit(
+                getApplicationContext(),
+                "NOTIF_CONFIG",
+                "enabled=" + enabled
+                        + " delayMs=" + delayMs);
     }
 
     private void generateDiagnosticLog() {

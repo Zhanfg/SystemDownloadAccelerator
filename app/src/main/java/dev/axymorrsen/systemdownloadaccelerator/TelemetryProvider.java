@@ -26,6 +26,8 @@ public final class TelemetryProvider extends ContentProvider {
             "dev.axymorrsen.systemdownloadaccelerator.telemetry";
     static final Uri EVENTS_URI =
             Uri.parse("content://" + AUTHORITY + "/events");
+    static final Uri CONFIG_URI =
+            Uri.parse("content://" + AUTHORITY + "/config");
 
     private static final String PREFS = "engine_telemetry";
     private static final int CAPACITY = 96;
@@ -90,14 +92,33 @@ public final class TelemetryProvider extends ContentProvider {
             String[] selectionArgs,
             String sortOrder) {
         Context context = getContext();
+
+        if (context == null || !callerAllowed(context)) {
+            return new MatrixCursor(new String[]{"denied"});
+        }
+
+        if (CONFIG_URI.getPath().equals(uri.getPath())) {
+            NotificationCleanupConfig config =
+                    NotificationCleanupConfig.readLocal(context);
+            MatrixCursor cursor =
+                    new MatrixCursor(new String[]{
+                            "enabled", "delay_ms"
+                    });
+            cursor.addRow(new Object[]{
+                    config.enabled ? 1 : 0,
+                    config.delayMs
+            });
+            return cursor;
+        }
+
         MatrixCursor cursor =
                 new MatrixCursor(new String[]{
                         "seq", "when", "uid", "phase", "detail"
                 });
 
-        if (context == null
-                || Binder.getCallingUid() != context.getApplicationInfo().uid
-                || !EVENTS_URI.getPath().equals(uri.getPath())) {
+        if (!EVENTS_URI.getPath().equals(uri.getPath())
+                || Binder.getCallingUid()
+                != context.getApplicationInfo().uid) {
             return cursor;
         }
 

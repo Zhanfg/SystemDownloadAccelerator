@@ -232,3 +232,17 @@ target as up to date but the injected runtime still belongs to an older build.
 ### Startup drain warmup
 
 Adaptive concurrency waits for the native DownloadManager consumer to establish a real delivered-throughput baseline before making ramp/hold decisions. Startup zero-drain samples are non-terminal, and post-ramp evaluation waits for three steady delivered samples. A stalled native consumer with buffered range data is reclaimed after a timeout so cancelled OEM DownloadProvider sessions cannot retain reorder-cache workers indefinitely.
+
+
+## Terminal notification cleanup
+
+Successful and failed DownloadProvider notifications keep their native behavior first,
+then are cleaned up after a configurable delay (60 seconds by default).
+
+- active and waiting download notifications are never targeted;
+- AOSP complete notifications are recognized by the complete channel and the 3:<id> tag;
+- OEM terminal notifications can fall back to auto-cancel + deleteIntent semantics;
+- cleanup prefers the notification's own deleteIntent, matching a user dismissal and preventing reposts;
+- NotificationManager.cancel() is used afterward as a removal fallback;
+- delay is configurable from 5 to 3600 seconds and can be disabled without hot reload;
+- hot reload cancels pending callbacks from the previous hook generation.

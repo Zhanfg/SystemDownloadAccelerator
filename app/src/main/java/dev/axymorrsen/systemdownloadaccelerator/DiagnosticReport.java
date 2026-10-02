@@ -93,6 +93,12 @@ final class DiagnosticReport {
         append(out, "build_fingerprint", Build.FINGERPRINT);
         append(out, "kernel", System.getProperty("os.version", "unknown"));
 
+        appendHeader(out, "Notification cleanup");
+        NotificationCleanupConfig notificationConfig =
+                NotificationCleanupConfig.readLocal(context);
+        append(out, "enabled", notificationConfig.enabled);
+        append(out, "delay_ms", notificationConfig.delayMs);
+
         appendHeader(out, "Self-test");
         append(out, "status", selfTestStatus == null ? "(none)" : selfTestStatus);
 
