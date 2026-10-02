@@ -51,10 +51,19 @@ public final class MicroPartPlannerTest {
         List<RangePart> original =
                 MicroPartPlanner.plan(0L, total, 4);
 
+        long chunk = MicroPartPlanner.stableChunkBytes(total);
+        int containingBucket = (int) (start / chunk);
+
         assertEquals(start, resumed.get(0).from);
-        assertEquals(original.get(1).to, resumed.get(0).to);
-        assertEquals(original.get(2).from, resumed.get(1).from);
-        assertEquals(total - 1L, resumed.get(resumed.size() - 1).to);
+        assertEquals(
+                original.get(containingBucket).to,
+                resumed.get(0).to);
+        assertEquals(
+                original.get(containingBucket + 1).from,
+                resumed.get(1).from);
+        assertEquals(
+                total - 1L,
+                resumed.get(resumed.size() - 1).to);
     }
 
     @Test
