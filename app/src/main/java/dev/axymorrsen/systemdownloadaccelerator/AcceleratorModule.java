@@ -340,6 +340,7 @@ public final class AcceleratorModule extends XposedModule {
 
         Context processContext = resolveProcessContext();
         ConnectionRegistry.initialize(processContext);
+        DownloadControlController.install(processContext);
         EngineTelemetry.emit(
                 processContext,
                 "ADAPTER_INSTALL",

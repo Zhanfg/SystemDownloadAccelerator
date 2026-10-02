@@ -216,6 +216,10 @@ final class ParallelRangeInputStream extends InputStream {
                     return thread;
                 });
 
+        DownloadProgressRegistry.updateResolvedUrl(
+                metadata.downloadId,
+                url == null ? null : url.toExternalForm());
+
         DownloadProgressController.onTransferProgress(
                 metadata.context,
                 metadata,

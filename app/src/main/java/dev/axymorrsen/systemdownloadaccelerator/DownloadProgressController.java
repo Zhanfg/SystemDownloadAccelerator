@@ -58,6 +58,11 @@ final class DownloadProgressController {
             return;
         }
 
+        DownloadControlController.enhanceNativeNotification(
+                context,
+                tag,
+                notification);
+
         if (!isActive(tag, channel, notification)) {
             return;
         }
@@ -164,6 +169,11 @@ final class DownloadProgressController {
                         .setOngoing(true)
                         .setCategory(Notification.CATEGORY_PROGRESS)
                         .setContentTitle(progressTitle(metadata));
+
+        DownloadControlController.addOverlayActions(
+                context,
+                builder,
+                metadata.downloadId);
 
         if (total > 0L) {
             int progress = basisPoints(current, total);

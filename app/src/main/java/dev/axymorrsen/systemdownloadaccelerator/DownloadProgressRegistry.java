@@ -12,6 +12,7 @@ final class DownloadProgressRegistry {
         final String title;
         final long currentBytes;
         final long totalBytes;
+        final String resolvedUrl;
         final long updatedNs;
 
         Snapshot(
@@ -20,12 +21,14 @@ final class DownloadProgressRegistry {
                 String title,
                 long currentBytes,
                 long totalBytes,
+                String resolvedUrl,
                 long updatedNs) {
             this.id = id;
             this.sourcePackage = sourcePackage;
             this.title = title;
             this.currentBytes = currentBytes;
             this.totalBytes = totalBytes;
+            this.resolvedUrl = clean(resolvedUrl);
             this.updatedNs = updatedNs;
         }
     }
@@ -53,8 +56,35 @@ final class DownloadProgressRegistry {
                         clean(title),
                         Math.max(0L, currentBytes),
                         Math.max(-1L, totalBytes),
+                        previousUrl(id),
                         now));
         prune(now);
+    }
+
+    static void updateResolvedUrl(
+            long id,
+            String resolvedUrl) {
+        if (id < 0L) return;
+        String cleaned = clean(resolvedUrl);
+        if (cleaned == null) return;
+
+        long now = System.nanoTime();
+        ENTRIES.compute(
+                id,
+                (key, old) -> new Snapshot(
+                        id,
+                        old == null ? null : old.sourcePackage,
+                        old == null ? null : old.title,
+                        old == null ? 0L : old.currentBytes,
+                        old == null ? -1L : old.totalBytes,
+                        cleaned,
+                        now));
+        prune(now);
+    }
+
+    private static String previousUrl(long id) {
+        Snapshot old = ENTRIES.get(id);
+        return old == null ? null : old.resolvedUrl;
     }
 
     static Snapshot get(long id) {

@@ -286,3 +286,25 @@ indeterminate spinner whenever byte totals are knowable.
   the transfer ends;
 - downloads that bypass Android DownloadManager entirely remain outside this
   system scope and require a source-app adapter rather than invented progress.
+
+
+## 0.7.2 notification controls
+
+Download notifications now expose lightweight transfer controls without taking
+ownership away from Android DownloadProvider.
+
+- Copy link: copies the in-memory resolved transfer URL when the accelerated
+  connection has followed redirects; otherwise falls back to DownloadProvider's
+  original URI. URLs are never persisted by SDA and only enter the clipboard
+  after an explicit user tap.
+- Pause / Continue: writes DownloadProvider's native control column
+  (CONTROL_PAUSED / CONTROL_RUN), so DownloadThread stops at its normal safe
+  checkpoint and can resume through the existing Range checkpoint path.
+- Cancel: the existing AOSP cancel action is preserved. SDA only adds a cancel
+  action when an OEM notification omitted one; fallback progress notifications
+  always carry cancel.
+- Failed/completed notifications retain Copy link when the download row still
+  exists, making it easy to hand the URL to a third-party downloader after the
+  system path fails.
+- Grouped notifications apply pause/resume/cancel to the downloads represented
+  by that source-app cluster, while the copy action copies all distinct links.
