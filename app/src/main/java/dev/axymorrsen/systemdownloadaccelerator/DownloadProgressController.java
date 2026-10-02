@@ -163,6 +163,12 @@ final class DownloadProgressController {
         }
         LAST_OVERLAY_MS.put(metadata.downloadId, now);
 
+        LiveUpdateBridge.publish(
+                context,
+                metadata,
+                current,
+                total);
+
         NotificationManager manager =
                 context.getSystemService(NotificationManager.class);
         if (manager == null) return;
@@ -224,6 +230,10 @@ final class DownloadProgressController {
             Context context,
             ConnectionRegistry.Metadata metadata) {
         if (metadata == null) return;
+
+        LiveUpdateBridge.end(
+                context,
+                metadata);
 
         DownloadProgressRegistry.remove(metadata.downloadId);
         LAST_OVERLAY_MS.remove(metadata.downloadId);

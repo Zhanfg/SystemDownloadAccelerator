@@ -12,6 +12,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Bundle;
 import android.widget.Toast;
 
 import java.util.ArrayList;
@@ -218,6 +219,59 @@ final class DownloadControlController {
         notification.actions =
                 ordered.toArray(
                         new Notification.Action[0]);
+    }
+
+    static Bundle liveActionBundle(
+            Context context,
+            long downloadId,
+            String sourcePackage) {
+        Bundle out = new Bundle();
+        if (context == null || downloadId < 0L) {
+            return out;
+        }
+
+        List<Target> targets =
+                queryTargets(
+                        context,
+                        new long[]{downloadId},
+                        sourcePackage);
+        Target target =
+                targets.isEmpty() ? null : targets.get(0);
+        String source =
+                target == null
+                        ? sourcePackage
+                        : target.sourcePackage;
+        boolean paused =
+                target != null
+                        && target.control == CONTROL_PAUSED;
+        long[] ids = new long[]{downloadId};
+
+        out.putParcelable(
+                "copyIntent",
+                pending(
+                        context,
+                        ACTION_COPY,
+                        ids,
+                        source,
+                        "live:" + downloadId));
+        out.putParcelable(
+                "toggleIntent",
+                pending(
+                        context,
+                        ACTION_TOGGLE,
+                        ids,
+                        source,
+                        "live:" + downloadId));
+        out.putParcelable(
+                "cancelIntent",
+                pending(
+                        context,
+                        ACTION_CANCEL,
+                        ids,
+                        source,
+                        "live:" + downloadId));
+        out.putBoolean("paused", paused);
+        return out;
     }
 
     static void addOverlayActions(

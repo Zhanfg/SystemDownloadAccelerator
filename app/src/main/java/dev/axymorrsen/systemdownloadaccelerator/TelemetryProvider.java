@@ -8,6 +8,7 @@ import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.Binder;
+import android.os.Bundle;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -82,6 +83,35 @@ public final class TelemetryProvider extends ContentProvider {
 
         context.getContentResolver().notifyChange(EVENTS_URI, null);
         return Uri.withAppendedPath(EVENTS_URI, "latest");
+    }
+
+    @Override
+    public Bundle call(
+            String method,
+            String arg,
+            Bundle extras) {
+        Context context = getContext();
+        if (context == null || !callerAllowed(context)) {
+            Bundle denied = new Bundle();
+            denied.putBoolean("posted", false);
+            denied.putString("error", "caller denied");
+            return denied;
+        }
+
+        if ("live_progress".equals(method)) {
+            return LiveUpdatePublisher.publish(
+                    context,
+                    extras == null ? new Bundle() : extras);
+        }
+
+        if ("live_end".equals(method)) {
+            long id = extras == null
+                    ? -1L
+                    : extras.getLong("id", -1L);
+            return LiveUpdatePublisher.cancel(context, id);
+        }
+
+        return super.call(method, arg, extras);
     }
 
     @Override
