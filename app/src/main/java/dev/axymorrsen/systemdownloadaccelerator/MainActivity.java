@@ -296,7 +296,7 @@ public final class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 36) {
             try {
                 Intent promoted = new Intent(
-                        "android.settings.APP_NOTIFICATION_PROMOTION_SETTINGS");
+                        Settings.ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS);
                 promoted.setData(
                         Uri.parse("package:" + getPackageName()));
                 startActivity(promoted);
