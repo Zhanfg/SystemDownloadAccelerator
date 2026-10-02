@@ -701,10 +701,30 @@ public final class AcceleratorModule extends XposedModule {
             }
         }
 
+        int reconciled = 0;
+        if (processContext != null) {
+            try {
+                NotificationManager manager =
+                        processContext.getSystemService(NotificationManager.class);
+                reconciled =
+                        notificationCleanup.reconcileActiveNotifications(
+                                processContext,
+                                manager);
+            } catch (Throwable t) {
+                EngineTelemetry.emit(
+                        processContext,
+                        "NOTIF_RECONCILE_ERROR",
+                        t.getClass().getSimpleName()
+                                + ": "
+                                + String.valueOf(t.getMessage()));
+            }
+        }
+
         EngineTelemetry.emit(
                 processContext,
                 "NOTIF_CLEANUP_READY",
-                "hooks=" + count);
+                "hooks=" + count
+                        + " reconciled=" + reconciled);
         return count;
     }
 

@@ -244,5 +244,7 @@ then are cleaned up after a configurable delay (60 seconds by default).
 - OEM terminal notifications can fall back to auto-cancel + deleteIntent semantics;
 - cleanup prefers the notification's own deleteIntent, matching a user dismissal and preventing reposts;
 - NotificationManager.cancel() is used afterward as a removal fallback;
+- provider restarts/reboots reconcile already-active terminal notifications and preserve the original timeout using the notification's first-shown timestamp;
+- OEM terminal notifications may be recognized by terminal channel/tag, AUTO_CANCEL, or an explicit deleteIntent while active/waiting channels are excluded;
 - delay is configurable from 5 to 3600 seconds and can be disabled without hot reload;
-- hot reload cancels pending callbacks from the previous hook generation.
+- hot reload cancels pending callbacks from the previous hook generation and immediately reconciles the replacement generation.

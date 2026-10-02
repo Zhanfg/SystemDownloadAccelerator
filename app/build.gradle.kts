@@ -13,8 +13,8 @@ android {
         applicationId = "dev.axymorrsen.systemdownloadaccelerator"
         minSdk = 26
         targetSdk = 37
-        versionCode = 27
-        versionName = "0.6.0-alpha01"
+        versionCode = 28
+        versionName = "0.6.0-alpha01-hotfix1"
         buildConfigField("String", "BUILD_ID", "\"$buildId\"")
     }
 
