@@ -240,3 +240,8 @@ Adaptive concurrency waits for the native DownloadManager consumer to establish 
 - Android applicationId: `dev.axym.sda`
 - internal Java namespace remains unchanged for the 0.5.0 release to minimize release risk
 - stable version: `0.5.0` (`versionCode 27`)
+
+
+### Migration from alpha builds
+
+`0.5.0` changes the Android applicationId from `dev.axymorrsen.systemdownloadaccelerator` to `dev.axym.sda`. Android therefore treats SDA as a separate app. Before enabling SDA in LSPosed, disable the legacy alpha module so both modules never hook the same system scopes at once. After SDA is enabled and verified, the legacy alpha app can be uninstalled.

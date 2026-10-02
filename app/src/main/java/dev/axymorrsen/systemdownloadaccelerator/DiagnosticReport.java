@@ -165,7 +165,7 @@ final class DiagnosticReport {
 
         appendHeader(out, "Relevant processes (root best-effort)");
         CommandResult ps = runRoot(
-                "ps -A 2>&1 | grep -E 'providers.downloads|android.process.media|systemui|systemdownloadaccelerator|lspd|zygote' | grep -v grep",
+                "ps -A 2>&1 | grep -E 'providers.downloads|android.process.media|systemui|dev.axym.sda|systemdownloadaccelerator|lspd|zygote' | grep -v grep",
                 5);
         appendCommand(out, "ps", ps);
 
@@ -269,6 +269,8 @@ final class DiagnosticReport {
         }
 
         String[] needles = {
+                "SDA",
+                BuildConfig.APPLICATION_ID,
                 "SysDlAccel",
                 "DownloadProvider",
                 "DownloadThread",
