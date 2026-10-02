@@ -95,6 +95,7 @@ final class ParallelRangeInputStream extends InputStream {
     private final HttpURLConnection original;
     private final ParallelRangeEngine.EntityValidator validator;
     private final long totalLength;
+    private final long nativeStartOffset;
     private final long sessionLength;
     private final long averagePartBytes;
     private final List<PartState> states;
@@ -141,6 +142,8 @@ final class ParallelRangeInputStream extends InputStream {
         this.original = original;
         this.validator = validator;
         this.totalLength = totalLength;
+        this.nativeStartOffset =
+                parts.isEmpty() ? 0L : parts.get(0).from;
         this.initialWorkers = initialWorkers;
         this.maxWorkers = maxWorkers;
 
@@ -213,6 +216,13 @@ final class ParallelRangeInputStream extends InputStream {
                     return thread;
                 });
 
+        DownloadProgressController.onTransferProgress(
+                metadata.context,
+                metadata,
+                nativeStartOffset,
+                totalLength,
+                true);
+
         startWorkers(initialWorkers);
 
         tunerThread = new Thread(
@@ -268,7 +278,16 @@ final class ParallelRangeInputStream extends InputStream {
                 int count = currentReader.read(buffer, offset, wanted);
                 if (count > 0) {
                     currentPartRead += count;
-                    totalConsumed.addAndGet(count);
+                    long consumed =
+                            totalConsumed.addAndGet(count);
+                    DownloadProgressController.onTransferProgress(
+                            metadata.context,
+                            metadata,
+                            Math.min(
+                                    totalLength,
+                                    nativeStartOffset + consumed),
+                            totalLength,
+                            false);
                     if (totalDownloaded.get() - totalConsumed.get()
                             < MAX_BUFFERED_BYTES) {
                         synchronized (schedulerLock) {
@@ -344,6 +363,10 @@ final class ParallelRangeInputStream extends InputStream {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+
+        DownloadProgressController.endTransfer(
+                metadata.context,
+                metadata);
 
         releaseSharedResources(
                 completedSuccessfully
@@ -990,6 +1013,13 @@ final class ParallelRangeInputStream extends InputStream {
                         + "/" + maxWorkers
                         + " avgMiBs="
                         + formatMiBPerSecond(averageBps));
+
+        DownloadProgressController.onTransferProgress(
+                metadata.context,
+                metadata,
+                totalLength,
+                totalLength,
+                true);
 
         HostProfileStore.recordSuccess(
                 metadata.context,

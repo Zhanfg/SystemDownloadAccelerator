@@ -264,3 +264,25 @@ The accelerated reorder window is now resumable instead of process-local:
 - stale checkpoints expire after 72 hours and the store is capped at 768 MiB.
 
 Transfer control also adds a process-wide fair socket budget, per-host warm-start learning, and HTTP-aware retry handling for transient 408/425/429/5xx failures with exponential backoff, jitter and numeric Retry-After support. Runtime throughput remains authoritative and learned host state never raises the adaptive hard ceiling.
+
+
+## 0.7.1 visible download progress
+
+Active system downloads now expose explicit progress instead of relying on an
+indeterminate spinner whenever byte totals are knowable.
+
+- native determinate DownloadProvider notifications retain Android's accounting
+  and receive an explicit numeric percentage;
+- indeterminate active notifications are upgraded from DownloadProvider
+  current/total byte columns when possible;
+- accelerated Range sessions publish the entity length discovered during range
+  validation, so redirects or initially unknown Content-Length values can still
+  become determinate;
+- the notification shows downloaded/total bytes and keeps the native title,
+  actions and lifecycle;
+- when the requesting app hides the native DownloadManager notification, an
+  SDA low-importance fallback progress notification is emitted for accelerated
+  transfers and removed automatically when the native notification appears or
+  the transfer ends;
+- downloads that bypass Android DownloadManager entirely remain outside this
+  system scope and require a source-app adapter rather than invented progress.

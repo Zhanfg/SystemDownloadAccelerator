@@ -34,11 +34,23 @@ final class ConnectionRegistry {
         final Context context;
         final Network network;
         final int requestingUid;
+        final long downloadId;
+        final String sourcePackage;
+        final String title;
 
-        ProviderExecution(Context context, Network network, int requestingUid) {
+        ProviderExecution(
+                Context context,
+                Network network,
+                int requestingUid,
+                long downloadId,
+                String sourcePackage,
+                String title) {
             this.context = context;
             this.network = network;
             this.requestingUid = requestingUid;
+            this.downloadId = downloadId;
+            this.sourcePackage = sourcePackage;
+            this.title = title;
         }
     }
 
@@ -46,6 +58,9 @@ final class ConnectionRegistry {
         volatile Context context;
         volatile Network network;
         volatile int requestingUid;
+        volatile long downloadId;
+        volatile String sourcePackage;
+        volatile String title;
         volatile FactoryKind factoryKind;
 
         private final LinkedHashMap<String, List<String>> headers =
@@ -55,10 +70,16 @@ final class ConnectionRegistry {
                 Context context,
                 Network network,
                 int requestingUid,
+                long downloadId,
+                String sourcePackage,
+                String title,
                 FactoryKind factoryKind) {
             this.context = context;
             this.network = network;
             this.requestingUid = requestingUid;
+            this.downloadId = downloadId;
+            this.sourcePackage = sourcePackage;
+            this.title = title;
             this.factoryKind = factoryKind == null
                     ? FactoryKind.UNKNOWN
                     : factoryKind;
@@ -68,12 +89,24 @@ final class ConnectionRegistry {
                 Context candidateContext,
                 Network candidateNetwork,
                 int candidateUid,
+                long candidateDownloadId,
+                String candidateSourcePackage,
+                String candidateTitle,
                 FactoryKind candidateKind) {
             if (context == null && candidateContext != null) {
                 context = candidateContext;
             }
             if (requestingUid < 0 && candidateUid >= 0) {
                 requestingUid = candidateUid;
+            }
+            if (downloadId < 0L && candidateDownloadId >= 0L) {
+                downloadId = candidateDownloadId;
+            }
+            if (sourcePackage == null && candidateSourcePackage != null) {
+                sourcePackage = candidateSourcePackage;
+            }
+            if (title == null && candidateTitle != null) {
+                title = candidateTitle;
             }
 
             FactoryKind kind = candidateKind == null
@@ -200,6 +233,10 @@ final class ConnectionRegistry {
                 : execution == null ? null : execution.network;
 
         int uid = execution == null ? -1 : execution.requestingUid;
+        long downloadId = execution == null ? -1L : execution.downloadId;
+        String sourcePackage =
+                execution == null ? null : execution.sourcePackage;
+        String title = execution == null ? null : execution.title;
 
         synchronized (CONNECTIONS) {
             Metadata existing = CONNECTIONS.get(connection);
@@ -208,6 +245,9 @@ final class ConnectionRegistry {
                         context,
                         network,
                         uid,
+                        downloadId,
+                        sourcePackage,
+                        title,
                         factoryKind);
                 return existing;
             }
@@ -216,6 +256,9 @@ final class ConnectionRegistry {
                     context,
                     network,
                     uid,
+                    downloadId,
+                    sourcePackage,
+                    title,
                     factoryKind);
             CONNECTIONS.put(connection, metadata);
             return metadata;

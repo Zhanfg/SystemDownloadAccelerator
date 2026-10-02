@@ -652,11 +652,9 @@ public final class AcceleratorModule extends XposedModule {
                         .setExceptionMode(
                                 XposedInterface.ExceptionMode.PROTECTIVE)
                         .intercept(chain -> {
-                            Object result = chain.proceed();
-
                             Object thisObject = chain.getThisObject();
                             if (!(thisObject instanceof NotificationManager)) {
-                                return result;
+                                return chain.proceed();
                             }
 
                             List<Object> args = chain.getArgs();
@@ -678,8 +676,15 @@ public final class AcceleratorModule extends XposedModule {
                                 notificationId = (Integer) args.get(1);
                                 notification = (Notification) args.get(2);
                             } else {
-                                return result;
+                                return chain.proceed();
                             }
+
+                            DownloadProgressController.enhanceBeforePost(
+                                    processContext,
+                                    tag,
+                                    notification);
+
+                            Object result = chain.proceed();
 
                             notificationCleanup.observePost(
                                     processContext,
@@ -1198,6 +1203,20 @@ public final class AcceleratorModule extends XposedModule {
         Object info =
                 getFieldQuietly(thread, "mInfo");
         int uid = getIntFieldQuietly(info, "mUid", -1);
+        long downloadId =
+                getLongFieldQuietly(info, "mId", -1L);
+        Object sourcePackageValue =
+                getFieldQuietly(info, "mPackage");
+        Object titleValue =
+                getFieldQuietly(info, "mTitle");
+        String sourcePackage =
+                sourcePackageValue instanceof String
+                        ? (String) sourcePackageValue
+                        : null;
+        String title =
+                titleValue instanceof String
+                        ? (String) titleValue
+                        : null;
 
         if (context == null) {
             return null;
@@ -1206,7 +1225,10 @@ public final class AcceleratorModule extends XposedModule {
         return new ConnectionRegistry.ProviderExecution(
                 context,
                 network,
-                uid);
+                uid,
+                downloadId,
+                sourcePackage,
+                title);
     }
 
     private Object getFieldQuietly(
@@ -1227,6 +1249,27 @@ public final class AcceleratorModule extends XposedModule {
             }
         }
         return null;
+    }
+
+    private long getLongFieldQuietly(
+            Object target,
+            String name,
+            long fallback) {
+        if (target == null) return fallback;
+
+        Class<?> cursor = target.getClass();
+        while (cursor != null) {
+            try {
+                Field field = cursor.getDeclaredField(name);
+                field.setAccessible(true);
+                return field.getLong(target);
+            } catch (NoSuchFieldException e) {
+                cursor = cursor.getSuperclass();
+            } catch (Throwable t) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 
     private int getIntFieldQuietly(
