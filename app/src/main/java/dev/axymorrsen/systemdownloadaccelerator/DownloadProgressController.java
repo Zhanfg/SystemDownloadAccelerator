@@ -82,7 +82,7 @@ final class DownloadProgressController {
                             (double) nativeProgress / nativeMax));
             extras.putCharSequence(
                     Notification.EXTRA_INFO_TEXT,
-                    formatPercent(ratio));
+                    ProgressFormat.percent(ratio));
             return;
         }
 
@@ -108,7 +108,7 @@ final class DownloadProgressController {
                     true);
             extras.putCharSequence(
                     Notification.EXTRA_SUB_TEXT,
-                    "已下载 " + formatBytes(aggregate.current));
+                    "已下载 " + ProgressFormat.bytes(aggregate.current));
         }
 
         cancelOverlayForSource(
@@ -169,18 +169,18 @@ final class DownloadProgressController {
             int progress = basisPoints(current, total);
             builder.setProgress(10_000, progress, false)
                     .setContentInfo(
-                            formatPercent(
+                            ProgressFormat.percent(
                                     Math.min(
                                             1.0,
                                             (double) current / total)))
                     .setContentText(
-                            formatBytes(current)
+                            ProgressFormat.bytes(current)
                                     + " / "
-                                    + formatBytes(total));
+                                    + ProgressFormat.bytes(total));
         } else {
             builder.setProgress(100, 0, true)
                     .setContentText(
-                            "已下载 " + formatBytes(current));
+                            "已下载 " + ProgressFormat.bytes(current));
         }
 
         try {
@@ -334,15 +334,15 @@ final class DownloadProgressController {
                 Math.min(1.0, (double) current / total));
         extras.putCharSequence(
                 Notification.EXTRA_INFO_TEXT,
-                formatPercent(ratio));
+                ProgressFormat.percent(ratio));
 
         String detail =
-                formatBytes(current)
+                ProgressFormat.bytes(current)
                         + " / "
-                        + formatBytes(total);
+                        + ProgressFormat.bytes(total);
         if (speedBytesPerSecond > 0L) {
             detail += " · "
-                    + formatBytes(speedBytesPerSecond)
+                    + ProgressFormat.bytes(speedBytesPerSecond)
                     + "/s";
         }
         extras.putCharSequence(
@@ -499,32 +499,4 @@ final class DownloadProgressController {
         return "正在下载";
     }
 
-    static String formatPercent(double ratio) {
-        double bounded = Math.max(
-                0.0,
-                Math.min(1.0, ratio));
-        return String.format(
-                Locale.ROOT,
-                "%.1f%%",
-                bounded * 100.0);
-    }
-
-    static String formatBytes(long bytes) {
-        double value = Math.max(0L, bytes);
-        String[] units = {"B", "KiB", "MiB", "GiB", "TiB"};
-        int unit = 0;
-        while (value >= 1024.0
-                && unit < units.length - 1) {
-            value /= 1024.0;
-            unit++;
-        }
-        if (unit == 0) {
-            return ((long) value) + " " + units[unit];
-        }
-        return String.format(
-                Locale.ROOT,
-                value < 10.0 ? "%.1f %s" : "%.0f %s",
-                value,
-                units[unit]);
-    }
 }

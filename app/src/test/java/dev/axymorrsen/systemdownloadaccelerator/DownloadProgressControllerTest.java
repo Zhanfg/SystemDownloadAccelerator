@@ -9,26 +9,26 @@ public final class DownloadProgressControllerTest {
     public void percentIsExplicitAndBounded() {
         assertEquals(
                 "0.0%",
-                DownloadProgressController.formatPercent(-1.0));
+                ProgressFormat.percent(-1.0));
         assertEquals(
                 "50.0%",
-                DownloadProgressController.formatPercent(0.5));
+                ProgressFormat.percent(0.5));
         assertEquals(
                 "100.0%",
-                DownloadProgressController.formatPercent(2.0));
+                ProgressFormat.percent(2.0));
     }
 
     @Test
     public void bytesUseBinaryUnits() {
         assertEquals(
                 "0 B",
-                DownloadProgressController.formatBytes(0L));
+                ProgressFormat.bytes(0L));
         assertEquals(
                 "1.0 KiB",
-                DownloadProgressController.formatBytes(1024L));
+                ProgressFormat.bytes(1024L));
         assertEquals(
                 "1.0 MiB",
-                DownloadProgressController.formatBytes(
+                ProgressFormat.bytes(
                         1024L * 1024L));
     }
 }
