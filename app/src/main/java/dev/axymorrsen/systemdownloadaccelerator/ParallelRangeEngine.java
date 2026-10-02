@@ -138,10 +138,16 @@ final class ParallelRangeEngine {
             }
 
             Conditions conditions = detectConditions(context, network);
-            int initialWorkers =
+            int policyInitial =
                     ADAPTIVE.initialWorkers(remaining, conditions);
             int maxWorkers =
                     ADAPTIVE.maxWorkers(remaining, conditions);
+            int initialWorkers =
+                    HostProfileStore.recommendedInitial(
+                            context,
+                            original.getURL().getHost(),
+                            policyInitial,
+                            maxWorkers);
             if (initialWorkers < 2 || maxWorkers < 2) {
                 fallback(context, "adaptive policy selected one worker");
                 return null;
@@ -168,6 +174,7 @@ final class ParallelRangeEngine {
                     "PARTS",
                     "build=" + BuildConfig.BUILD_ID
                             + " initial=" + initialWorkers
+                            + " policyInitial=" + policyInitial
                             + " max=" + maxWorkers
                             + " parts=" + parts.size()
                             + " network=" + conditions.networkKind
@@ -246,8 +253,13 @@ final class ParallelRangeEngine {
 
             int code = conn.getResponseCode();
             if (code != 206) {
+                long retryAfterMs =
+                        parseRetryAfterMillis(
+                                conn.getHeaderField("Retry-After"));
                 conn.disconnect();
-                throw new IOException("Range HTTP " + code);
+                throw new RangeHttpException(
+                        code,
+                        retryAfterMs);
             }
 
             ContentRange range =
@@ -528,7 +540,13 @@ final class ParallelRangeEngine {
     private static File chooseCacheRoot(Context context) {
         if (context == null) return null;
 
-        File base = context.getCacheDir();
+        File base = context.getNoBackupFilesDir();
+        if (base == null) {
+            base = context.getFilesDir();
+        }
+        if (base == null) {
+            base = context.getCacheDir();
+        }
         if (base == null) return null;
 
         File root = new File(base, "sysdl_range");
@@ -536,6 +554,20 @@ final class ParallelRangeEngine {
             return null;
         }
         return root;
+    }
+
+    private static long parseRetryAfterMillis(String value) {
+        String text = clean(value);
+        if (text == null) return -1L;
+        try {
+            long seconds = Long.parseLong(text);
+            if (seconds < 0L) return -1L;
+            return Math.min(
+                    30_000L,
+                    seconds * 1000L);
+        } catch (Throwable ignored) {
+            return -1L;
+        }
     }
 
     private static String clean(String value) {

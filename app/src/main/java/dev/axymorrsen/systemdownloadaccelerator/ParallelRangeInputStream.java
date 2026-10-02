@@ -14,7 +14,6 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -56,7 +55,7 @@ final class ParallelRangeInputStream extends InputStream {
     }
 
     private static final int BUFFER_SIZE = 64 * 1024;
-    private static final int MAX_PART_RETRIES = 3;
+    private static final int MAX_PART_RETRIES = 5;
     private static final long TUNE_INTERVAL_MS = 2500L;
     private static final long CACHE_WINDOW_BYTES = 128L * 1024L * 1024L;
     private static final long MAX_BUFFERED_BYTES = 128L * 1024L * 1024L;
@@ -71,14 +70,22 @@ final class ParallelRangeInputStream extends InputStream {
         final RangePart part;
         final File file;
         final Object lock = new Object();
-        final AtomicLong downloaded = new AtomicLong(0L);
+        final AtomicLong downloaded;
 
         volatile boolean done;
         volatile Throwable failure;
 
-        PartState(RangePart part, File file) {
+        PartState(
+                RangePart part,
+                File file,
+                long reusableBytes) {
             this.part = part;
             this.file = file;
+            long initial = Math.max(
+                    0L,
+                    Math.min(part.length(), reusableBytes));
+            this.downloaded = new AtomicLong(initial);
+            this.done = initial == part.length();
         }
     }
 
@@ -93,7 +100,8 @@ final class ParallelRangeInputStream extends InputStream {
     private final List<PartState> states;
     private final int initialWorkers;
     private final int maxWorkers;
-    private final File sessionDir;
+    private final RangeSessionCache.Session rangeSession;
+    private final GlobalTransferGovernor.Lease globalLease;
 
     private final ExecutorService pool;
     private final AdaptiveConcurrencyController controller;
@@ -109,6 +117,7 @@ final class ParallelRangeInputStream extends InputStream {
 
     private volatile boolean cancelled;
     private volatile boolean closed;
+    private volatile boolean completedSuccessfully;
     private volatile Throwable sessionFailure;
     private volatile int consumedPartIndex;
 
@@ -153,24 +162,46 @@ final class ParallelRangeInputStream extends InputStream {
                 (sessionLength + Math.max(1, parts.size()) - 1L)
                         / Math.max(1, parts.size()));
 
-        sessionDir = new File(
+        rangeSession = RangeSessionCache.open(
                 cacheRoot,
-                "job_" + UUID.randomUUID().toString().replace("-", ""));
-        if (!sessionDir.mkdirs()) {
-            throw new IOException("unable to create range session directory");
-        }
+                url,
+                validator.headerValue,
+                totalLength,
+                metadata.requestingUid,
+                headers);
+        globalLease = GlobalTransferGovernor.register(
+                url == null ? "" : url.getHost(),
+                maxWorkers);
 
         states = new ArrayList<>(parts.size());
+        long restoredBytes = 0L;
         for (RangePart part : parts) {
-            states.add(new PartState(
+            RangeSessionCache.PartBacking backing =
+                    rangeSession.backingFor(part);
+            PartState state = new PartState(
                     part,
-                    new File(sessionDir, "p" + part.index + ".tmp")));
+                    backing.file,
+                    backing.reusableBytes);
+            states.add(state);
+            restoredBytes += state.downloaded.get();
         }
+        totalDownloaded.set(restoredBytes);
 
         controller =
                 new AdaptiveConcurrencyController(
                         initialWorkers,
                         maxWorkers);
+
+        if (restoredBytes > 0L) {
+            EngineTelemetry.emit(
+                    metadata.context,
+                    "RESUME_CACHE",
+                    "restoredMiB=" + formatMiB(restoredBytes)
+                            + " session="
+                            + rangeSession.key().substring(0, 12)
+                            + " persistent="
+                            + rangeSession.persistent());
+        }
 
         pool = Executors.newFixedThreadPool(
                 maxWorkers,
@@ -314,13 +345,17 @@ final class ParallelRangeInputStream extends InputStream {
             Thread.currentThread().interrupt();
         }
 
-        cleanupFiles();
+        releaseSharedResources(
+                completedSuccessfully
+                        || RetryPolicy.isIntegrityFailure(sessionFailure));
     }
 
     private void startWorkers(int target) {
         int capped = Math.max(
                 1,
-                Math.min(maxWorkers, target));
+                Math.min(
+                        maxWorkers,
+                        globalLease.allowed(target)));
 
         while (!cancelled) {
             int current = activeWorkers.get();
@@ -464,6 +499,11 @@ final class ParallelRangeInputStream extends InputStream {
                                     remaining)
                             : null;
 
+            // Re-evaluate the process-wide fair share every sample. This both
+            // retires workers when another transfer arrives and expands again
+            // after a competing transfer finishes.
+            startWorkers(controller.workers());
+
             sampleIndex++;
             if (sampleIndex % 4 == 0) {
                 EngineTelemetry.emit(
@@ -481,8 +521,11 @@ final class ParallelRangeInputStream extends InputStream {
                                 + formatMiB(currentFutureBufferedBytes())
                                 + " workers="
                                 + activeWorkers.get()
-                                + "->" + controller.workers()
+                                + "->" + globalLease.allowed(
+                                        controller.workers())
                                 + "/" + maxWorkers
+                                + " sessions="
+                                + GlobalTransferGovernor.activeSessions()
                                 + " controllerReady="
                                 + controllerReady);
             }
@@ -599,7 +642,7 @@ final class ParallelRangeInputStream extends InputStream {
         }
 
         closeCurrentReader();
-        cleanupFiles();
+        releaseSharedResources(false);
     }
 
     private void workerLoop() {
@@ -640,7 +683,9 @@ final class ParallelRangeInputStream extends InputStream {
     private boolean retireIfExcess() {
         while (!cancelled) {
             int active = activeWorkers.get();
-            int target = Math.max(1, controller.workers());
+            int target = Math.max(
+                    1,
+                    globalLease.allowed(controller.workers()));
             if (active <= target) {
                 return false;
             }
@@ -736,10 +781,26 @@ final class ParallelRangeInputStream extends InputStream {
                             maxThisResponse);
                     attempts = 0;
                 } catch (Throwable t) {
-                    if (attempts >= MAX_PART_RETRIES) {
+                    if (!RetryPolicy.shouldRetry(
+                            t,
+                            attempts,
+                            MAX_PART_RETRIES)) {
                         throw t;
                     }
-                    sleepRetry(attempts);
+                    long delayMs = RetryPolicy.delayMillis(
+                            attempts,
+                            t,
+                            state.part.from);
+                    EngineTelemetry.emit(
+                            metadata.context,
+                            "PART_RETRY",
+                            "part=" + state.part.index
+                                    + " attempt=" + attempts
+                                    + "/" + MAX_PART_RETRIES
+                                    + " delayMs=" + delayMs
+                                    + " error="
+                                    + t.getClass().getSimpleName());
+                    sleepRetry(delayMs);
                 } finally {
                     if (range != null) {
                         range.close();
@@ -794,6 +855,7 @@ final class ParallelRangeInputStream extends InputStream {
                     state.lock.notifyAll();
                 }
             }
+            out.getFD().sync();
         }
     }
 
@@ -924,12 +986,26 @@ final class ParallelRangeInputStream extends InputStream {
                         + "/" + maxWorkers
                         + " avgMiBs="
                         + formatMiBPerSecond(averageBps));
+
+        HostProfileStore.recordSuccess(
+                metadata.context,
+                url == null ? null : url.getHost(),
+                Math.max(
+                        1,
+                        Math.min(
+                                controller.workers(),
+                                Math.max(1, peakWorkers.get()))),
+                averageBps);
+        completedSuccessfully = true;
         close();
     }
 
     private void failSession(Throwable t) {
         if (sessionFailure == null) {
             sessionFailure = t;
+            HostProfileStore.recordFailure(
+                    metadata.context,
+                    url == null ? null : url.getHost());
             EngineTelemetry.emit(
                     metadata.context,
                     "ERROR",
@@ -975,13 +1051,15 @@ final class ParallelRangeInputStream extends InputStream {
         }
     }
 
-    private void cleanupFiles() {
-        for (PartState state : states) {
-            //noinspection ResultOfMethodCallIgnored
-            state.file.delete();
+    private void releaseSharedResources(boolean discardCache) {
+        try {
+            globalLease.close();
+        } catch (Throwable ignored) {
         }
-        //noinspection ResultOfMethodCallIgnored
-        sessionDir.delete();
+        try {
+            rangeSession.close(discardCache);
+        } catch (Throwable ignored) {
+        }
     }
 
     private static IOException asIo(
@@ -993,9 +1071,9 @@ final class ParallelRangeInputStream extends InputStream {
         return new IOException(message, cause);
     }
 
-    private static void sleepRetry(int attempt)
+    private static void sleepRetry(long delayMs)
             throws InterruptedException {
-        Thread.sleep(Math.min(1500L, 350L * attempt));
+        Thread.sleep(Math.max(0L, delayMs));
     }
 
     private static String formatMiB(long bytes) {

@@ -248,3 +248,18 @@ then are cleaned up after a configurable delay (60 seconds by default).
 - OEM terminal notifications may be recognized by terminal channel/tag, AUTO_CANCEL, or an explicit deleteIntent while active/waiting channels are excluded;
 - delay is configurable from 5 to 3600 seconds and can be disabled without hot reload;
 - hot reload cancels pending callbacks from the previous hook generation and immediately reconciles the replacement generation.
+
+
+## 0.7 transfer resilience
+
+The accelerated reorder window is now resumable instead of process-local:
+
+- micro-part boundaries are deterministic across worker-count and native resume changes;
+- prefetched range files are checkpointed in DownloadProvider private no-backup storage;
+- the session key is a SHA-256 fingerprint; URLs, cookies and authorization headers are not stored as plaintext metadata;
+- completed bytes that Android has already committed are deleted immediately, while only future prefetched bytes are retained;
+- a restarted provider can reuse complete future parts and the suffix of a partially prefetched head part;
+- identical simultaneous downloads use an isolated volatile session rather than sharing writers;
+- stale checkpoints expire after 72 hours and the store is capped at 768 MiB.
+
+Transfer control also adds a process-wide fair socket budget, per-host warm-start learning, and HTTP-aware retry handling for transient 408/425/429/5xx failures with exponential backoff, jitter and numeric Retry-After support. Runtime throughput remains authoritative and learned host state never raises the adaptive hard ceiling.
