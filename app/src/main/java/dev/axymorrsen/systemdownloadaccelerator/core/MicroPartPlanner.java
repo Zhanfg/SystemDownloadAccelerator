@@ -48,9 +48,6 @@ public final class MicroPartPlanner {
         long chunkBytes = Math.max(
                 stableChunkBytes(totalLength),
                 minPartBytes);
-        chunkBytes = Math.max(
-                chunkBytes,
-                ceilDiv(totalLength, ABSOLUTE_MAX_PARTS));
 
         List<RangePart> parts = new ArrayList<>();
         long cursor = startOffset;
@@ -85,22 +82,14 @@ public final class MicroPartPlanner {
     }
 
     public static long stableChunkBytes(long totalLength) {
-        if (totalLength < 64L * MIB) {
-            return 4L * MIB;
-        }
-        if (totalLength < 256L * MIB) {
-            return 8L * MIB;
-        }
-        if (totalLength < 1L * GIB) {
-            return 16L * MIB;
-        }
-        if (totalLength < 4L * GIB) {
-            return 32L * MIB;
-        }
-        if (totalLength < 16L * GIB) {
-            return 64L * MIB;
-        }
-        return 128L * MIB;
+        long pipelineChunk = 2L * MIB;
+        long partCapChunk =
+                ceilDiv(
+                        Math.max(1L, totalLength),
+                        ABSOLUTE_MAX_PARTS);
+        return Math.max(
+                pipelineChunk,
+                partCapChunk);
     }
 
     private static long ceilDiv(long value, long divisor) {

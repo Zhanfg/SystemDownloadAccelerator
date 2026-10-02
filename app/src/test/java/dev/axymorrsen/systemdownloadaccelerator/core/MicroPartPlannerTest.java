@@ -12,23 +12,23 @@ public final class MicroPartPlannerTest {
     private static final long GIB = 1024L * MIB;
 
     @Test
-    public void sixteenMiBUsesFourStableFourMiBParts() {
+    public void sixteenMiBUsesEightStableTwoMiBParts() {
         long size = 16L * MIB;
         List<RangePart> parts =
                 MicroPartPlanner.plan(0L, size, 2);
-        assertEquals(4, parts.size());
-        assertEquals(4L * MIB, parts.get(0).length());
+        assertEquals(8, parts.size());
+        assertEquals(2L * MIB, parts.get(0).length());
         assertEquals(0L, parts.get(0).from);
-        assertEquals(size - 1L, parts.get(3).to);
+        assertEquals(size - 1L, parts.get(7).to);
     }
 
     @Test
-    public void onePointFiveGiBUsesStableThirtyTwoMiBParts() {
+    public void onePointFiveGiBUsesStableTwoMiBParts() {
         long size = 1536L * MIB;
         List<RangePart> parts =
                 MicroPartPlanner.plan(0L, size, 16);
-        assertEquals(48, parts.size());
-        assertEquals(32L * MIB, parts.get(0).length());
+        assertEquals(768, parts.size());
+        assertEquals(2L * MIB, parts.get(0).length());
         assertEquals(size - 1L, parts.get(parts.size() - 1).to);
     }
 
@@ -37,8 +37,8 @@ public final class MicroPartPlannerTest {
         long size = 16L * GIB;
         List<RangePart> parts =
                 MicroPartPlanner.plan(0L, size, 64);
-        assertEquals(128, parts.size());
-        assertEquals(128L * MIB, parts.get(0).length());
+        assertEquals(8192, parts.size());
+        assertEquals(2L * MIB, parts.get(0).length());
         assertTrue(parts.size() <= MicroPartPlanner.ABSOLUTE_MAX_PARTS);
     }
 

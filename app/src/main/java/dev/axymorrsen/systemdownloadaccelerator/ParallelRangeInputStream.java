@@ -860,7 +860,6 @@ final class ParallelRangeInputStream extends InputStream {
                     state.lock.notifyAll();
                 }
             }
-            out.getFD().sync();
         }
     }
 

@@ -192,8 +192,9 @@ Large-file performance tuning avoids artificial per-range connection churn:
 
 - worker replay strips hop-by-hop headers such as Connection: close so the
   underlying HttpURLConnection/OkHttp pool may reuse TCP/TLS connections;
-- immutable ranges are deliberately much larger for GiB-scale files instead
-  of fixed 8 MiB micro-parts;
+- range boundaries use stable 2 MiB-aligned micro-parts while the entity fits
+  within the 8192-part cap, preserving checkpoint reuse and allowing a 64-worker
+  pool to fit inside the 128 MiB reorder budget;
 - the sequential reorder reader no longer seeks before every native read;
 - Android downstream bandwidth is treated as a starting hint, not a hard
   concurrency ceiling; measured throughput remains authoritative;
