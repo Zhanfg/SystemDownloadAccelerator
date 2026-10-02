@@ -308,3 +308,28 @@ ownership away from Android DownloadProvider.
   system path fails.
 - Grouped notifications apply pause/resume/cancel to the downloads represented
   by that source-app cluster, while the copy action copies all distinct links.
+
+
+## 0.8 Android 16 live download surface
+
+Android 16+ active download notifications now use the public
+Notification.ProgressStyle template instead of only a classic progress bar.
+
+- determinate downloads render as a progress-centric notification using one
+  stable progress segment and a live tracker position;
+- indeterminate downloads use ProgressStyle's native initialization state and
+  automatically become determinate once SDA or DownloadProvider learns the
+  entity length;
+- the documented promoted-ongoing request bit is set so eligible SystemUI/OEM
+  implementations can surface the task more prominently on the notification
+  shade, lock screen, and status-bar chip;
+- the compact critical text is the current integer percentage, keeping the
+  status chip stable and short;
+- promotion remains a SystemUI/OEM decision; unsupported or ineligible devices
+  simply keep a normal valid ProgressStyle notification;
+- native notification actions are normalized to the stable order:
+  Copy link -> Pause/Continue -> Cancel, followed by any unrelated OEM actions.
+
+ColorOS Fluid Cloud is a separate OPPO service-card/template platform. SDA does
+not hook its private SystemUI internals; the Android 16 live-update path is kept
+as the stable standards-first integration layer.

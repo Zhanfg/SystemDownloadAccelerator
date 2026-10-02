@@ -147,47 +147,77 @@ final class DownloadControlController {
             }
         }
 
-        addActionIfMissing(
-                notification,
-                context,
-                android.R.drawable.ic_menu_share,
-                "复制链接",
-                pending(
-                        context,
-                        ACTION_COPY,
-                        ids,
-                        source,
-                        tag));
-
-        if (unfinished) {
-            addActionIfMissing(
-                    notification,
-                    context,
-                    allPaused
-                            ? android.R.drawable.ic_media_play
-                            : android.R.drawable.ic_media_pause,
-                    allPaused ? "继续" : "暂停",
-                    pending(
-                            context,
-                            ACTION_TOGGLE,
-                            ids,
-                            source,
-                            tag));
-
-            if (!hasCancelAction(notification)) {
-                addActionIfMissing(
-                        notification,
-                        context,
-                        android.R.drawable.ic_menu_close_clear_cancel,
-                        "取消",
+        Notification.Action copyAction =
+                action(
+                        android.R.drawable.ic_menu_share,
+                        "复制链接",
                         pending(
                                 context,
-                                ACTION_CANCEL,
+                                ACTION_COPY,
                                 ids,
                                 source,
                                 tag));
+
+        Notification.Action pauseAction =
+                unfinished
+                        ? action(
+                                allPaused
+                                        ? android.R.drawable.ic_media_play
+                                        : android.R.drawable.ic_media_pause,
+                                allPaused ? "继续" : "暂停",
+                                pending(
+                                        context,
+                                        ACTION_TOGGLE,
+                                        ids,
+                                        source,
+                                        tag))
+                        : null;
+
+        Notification.Action existingCancel =
+                findCancelAction(notification);
+        Notification.Action cancelAction =
+                unfinished
+                        ? (existingCancel != null
+                                ? existingCancel
+                                : action(
+                                        android.R.drawable.ic_menu_close_clear_cancel,
+                                        "取消",
+                                        pending(
+                                                context,
+                                                ACTION_CANCEL,
+                                                ids,
+                                                source,
+                                                tag)))
+                        : null;
+
+        // Put our primary download controls first in a stable order. Preserve
+        // unrelated OEM actions afterward, but remove duplicate old
+        // copy/pause/cancel controls.
+        ArrayList<Notification.Action> ordered =
+                new ArrayList<>();
+        ordered.add(copyAction);
+        if (pauseAction != null) {
+            ordered.add(pauseAction);
+        }
+        if (cancelAction != null) {
+            ordered.add(cancelAction);
+        }
+
+        if (notification.actions != null) {
+            for (Notification.Action old : notification.actions) {
+                if (old == null || old == existingCancel) {
+                    continue;
+                }
+                if (isDownloadControlAction(old)) {
+                    continue;
+                }
+                ordered.add(old);
             }
         }
+
+        notification.actions =
+                ordered.toArray(
+                        new Notification.Action[0]);
     }
 
     static void addOverlayActions(
@@ -538,70 +568,57 @@ final class DownloadControlController {
                         | PendingIntent.FLAG_IMMUTABLE);
     }
 
-    private static void addActionIfMissing(
-            Notification notification,
-            Context context,
+    private static Notification.Action action(
             int icon,
             String title,
             PendingIntent pendingIntent) {
-        if (hasActionTitle(notification, title)) {
-            return;
-        }
-
-        Notification.Action action =
-                new Notification.Action.Builder(
-                        icon,
-                        title,
-                        pendingIntent)
-                        .build();
-
-        Notification.Action[] old =
-                notification.actions;
-        int length = old == null ? 0 : old.length;
-        Notification.Action[] next =
-                new Notification.Action[length + 1];
-        if (length > 0) {
-            System.arraycopy(
-                    old,
-                    0,
-                    next,
-                    0,
-                    length);
-        }
-        next[length] = action;
-        notification.actions = next;
+        return new Notification.Action.Builder(
+                icon,
+                title,
+                pendingIntent)
+                .build();
     }
 
-    private static boolean hasCancelAction(
+    private static Notification.Action findCancelAction(
             Notification notification) {
-        if (notification.actions == null) return false;
+        if (notification.actions == null) return null;
         for (Notification.Action action : notification.actions) {
-            if (action == null || action.title == null) continue;
-            String title =
-                    action.title.toString()
-                            .trim()
-                            .toLowerCase(Locale.ROOT);
-            if (title.contains("cancel")
-                    || title.contains("取消")
-                    || title.contains("停止")) {
-                return true;
+            if (isCancelAction(action)) {
+                return action;
             }
         }
-        return false;
+        return null;
     }
 
-    private static boolean hasActionTitle(
-            Notification notification,
-            String expected) {
-        if (notification.actions == null) return false;
-        for (Notification.Action action : notification.actions) {
-            if (action == null || action.title == null) continue;
-            if (expected.equals(
-                    action.title.toString().trim())) {
-                return true;
-            }
+    private static boolean isDownloadControlAction(
+            Notification.Action action) {
+        if (action == null || action.title == null) {
+            return false;
         }
-        return false;
+        String title =
+                action.title.toString()
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+        return "复制链接".equals(title)
+                || "暂停".equals(title)
+                || "继续".equals(title)
+                || "pause".equals(title)
+                || "resume".equals(title)
+                || isCancelAction(action);
+    }
+
+    private static boolean isCancelAction(
+            Notification.Action action) {
+        if (action == null || action.title == null) {
+            return false;
+        }
+        String title =
+                action.title.toString()
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+        return title.contains("cancel")
+                || title.contains("取消")
+                || title.contains("停止");
     }
 
     private static long[] ids(List<Target> targets) {

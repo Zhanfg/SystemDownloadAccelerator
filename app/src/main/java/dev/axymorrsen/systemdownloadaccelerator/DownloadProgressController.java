@@ -47,15 +47,17 @@ final class DownloadProgressController {
 
     private DownloadProgressController() {}
 
-    static void enhanceBeforePost(
+    static Notification enhanceBeforePost(
             Context context,
             String tag,
             Notification notification) {
-        if (context == null || notification == null) return;
+        if (context == null || notification == null) {
+            return notification;
+        }
 
         String channel = notification.getChannelId();
         if (OVERLAY_CHANNEL.equals(channel)) {
-            return;
+            return notification;
         }
 
         DownloadControlController.enhanceNativeNotification(
@@ -64,11 +66,15 @@ final class DownloadProgressController {
                 notification);
 
         if (!isActive(tag, channel, notification)) {
-            return;
+            return notification;
         }
 
         Bundle extras = notification.extras;
-        if (extras == null) return;
+        if (extras == null) {
+            return LiveDownloadNotificationController.enhance(
+                    context,
+                    notification);
+        }
 
         // If Android already has determinate progress, preserve its own byte
         // accounting and simply make the numeric percent explicit.
@@ -88,7 +94,9 @@ final class DownloadProgressController {
             extras.putCharSequence(
                     Notification.EXTRA_INFO_TEXT,
                     ProgressFormat.percent(ratio));
-            return;
+            return LiveDownloadNotificationController.enhance(
+                    context,
+                    notification);
         }
 
         String sourcePackage = sourcePackageFromTag(tag);
@@ -98,7 +106,9 @@ final class DownloadProgressController {
             aggregate = queryProvider(context, sourcePackage);
         }
         if (aggregate == null || aggregate.count == 0) {
-            return;
+            return LiveDownloadNotificationController.enhance(
+                    context,
+                    notification);
         }
 
         if (aggregate.totalKnown && aggregate.total > 0L) {
@@ -119,6 +129,10 @@ final class DownloadProgressController {
         cancelOverlayForSource(
                 context,
                 sourcePackage);
+
+        return LiveDownloadNotificationController.enhance(
+                context,
+                notification);
     }
 
     static void onTransferProgress(
@@ -174,6 +188,10 @@ final class DownloadProgressController {
                 context,
                 builder,
                 metadata.downloadId);
+        LiveDownloadNotificationController.configureBuilder(
+                builder,
+                current,
+                total);
 
         if (total > 0L) {
             int progress = basisPoints(current, total);

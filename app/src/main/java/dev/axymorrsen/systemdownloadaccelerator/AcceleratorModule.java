@@ -680,19 +680,29 @@ public final class AcceleratorModule extends XposedModule {
                                 return chain.proceed();
                             }
 
-                            DownloadProgressController.enhanceBeforePost(
-                                    processContext,
-                                    tag,
-                                    notification);
+                            Notification enhanced =
+                                    DownloadProgressController.enhanceBeforePost(
+                                            processContext,
+                                            tag,
+                                            notification);
 
-                            Object result = chain.proceed();
+                            Object[] nextArgs =
+                                    args.toArray(new Object[0]);
+                            if (args.size() == 2) {
+                                nextArgs[1] = enhanced;
+                            } else {
+                                nextArgs[2] = enhanced;
+                            }
+
+                            Object result =
+                                    chain.proceed(nextArgs);
 
                             notificationCleanup.observePost(
                                     processContext,
                                     (NotificationManager) thisObject,
                                     tag,
                                     notificationId,
-                                    notification);
+                                    enhanced);
                             return result;
                         });
                 count++;
