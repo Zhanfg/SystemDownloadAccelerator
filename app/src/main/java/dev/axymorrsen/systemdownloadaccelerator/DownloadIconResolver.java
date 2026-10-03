@@ -34,7 +34,28 @@ final class DownloadIconResolver {
     }
 
     static int copyIcon() {
-        return android.R.drawable.ic_menu_copy;
+        android.content.res.Resources system =
+                android.content.res.Resources.getSystem();
+        String[] names = {
+                "ic_menu_copy",
+                "ic_menu_copy_material",
+                "ic_content_copy",
+                "ic_copy"
+        };
+        for (String name : names) {
+            int id = system.getIdentifier(
+                    name,
+                    "drawable",
+                    "android");
+            if (id != 0) {
+                return id;
+            }
+        }
+
+        // Modern SystemUI renders notification actions primarily from text.
+        // Returning 0 is preferable to showing a semantically wrong Share or
+        // Save glyph when the framework does not expose its Copy resource.
+        return 0;
     }
 
     static int pauseIcon() {
