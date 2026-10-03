@@ -101,7 +101,9 @@ final class DownloadProgressController {
 
         String sourcePackage = sourcePackageFromTag(tag);
         Aggregate aggregate =
-                aggregateRegistry(sourcePackage);
+                sourcePackage == null
+                        ? new Aggregate()
+                        : aggregateRegistry(sourcePackage);
         if (aggregate.count == 0) {
             aggregate = queryProvider(context, sourcePackage);
         }
@@ -434,7 +436,7 @@ final class DownloadProgressController {
             String expected,
             String actual) {
         if (expected == null) {
-            return actual == null || actual.isBlank();
+            return true;
         }
         return actual != null
                 && expected.equals(

@@ -723,22 +723,47 @@ public final class AcceleratorModule extends XposedModule {
             Context processContext) {
         int count = 0;
 
-        Method[] methods = {
-                findPublicMethod(
-                        NotificationManager.class,
-                        "notify",
-                        int.class,
-                        Notification.class),
-                findPublicMethod(
-                        NotificationManager.class,
-                        "notify",
-                        String.class,
-                        int.class,
-                        Notification.class)
-        };
+        for (Method method : NotificationManager.class.getDeclaredMethods()) {
+            String methodName = method.getName();
+            if (methodName == null
+                    || !methodName.startsWith("notify")) {
+                continue;
+            }
 
-        for (Method method : methods) {
-            if (method == null) continue;
+            Class<?>[] params = method.getParameterTypes();
+            int notificationIndex = -1;
+            int idIndex = -1;
+            int tagIndex = -1;
+
+            for (int i = 0; i < params.length; i++) {
+                if (params[i] == Notification.class) {
+                    notificationIndex = i;
+                    break;
+                }
+            }
+            if (notificationIndex < 0) {
+                continue;
+            }
+
+            for (int i = notificationIndex - 1; i >= 0; i--) {
+                if (params[i] == int.class
+                        || params[i] == Integer.class) {
+                    idIndex = i;
+                    break;
+                }
+            }
+            if (idIndex >= 0) {
+                for (int i = idIndex - 1; i >= 0; i--) {
+                    if (params[i] == String.class) {
+                        tagIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            final int notifArg = notificationIndex;
+            final int idArg = idIndex;
+            final int tagArg = tagIndex;
 
             try {
                 method.setAccessible(true);
@@ -761,26 +786,41 @@ public final class AcceleratorModule extends XposedModule {
                             }
 
                             List<Object> args = chain.getArgs();
-                            String tag = null;
-                            int notificationId;
-                            Notification notification;
-
-                            if (args.size() == 2
-                                    && args.get(0) instanceof Integer
-                                    && args.get(1) instanceof Notification) {
-                                notificationId = (Integer) args.get(0);
-                                notification = (Notification) args.get(1);
-                            } else if (args.size() == 3
-                                    && (args.get(0) == null
-                                    || args.get(0) instanceof String)
-                                    && args.get(1) instanceof Integer
-                                    && args.get(2) instanceof Notification) {
-                                tag = (String) args.get(0);
-                                notificationId = (Integer) args.get(1);
-                                notification = (Notification) args.get(2);
-                            } else {
+                            if (notifArg >= args.size()
+                                    || !(args.get(notifArg)
+                                    instanceof Notification)) {
                                 return chain.proceed();
                             }
+
+                            Notification notification =
+                                    (Notification) args.get(notifArg);
+                            int notificationId =
+                                    idArg >= 0
+                                            && idArg < args.size()
+                                            && args.get(idArg) instanceof Integer
+                                            ? (Integer) args.get(idArg)
+                                            : 0;
+                            String tag =
+                                    tagArg >= 0
+                                            && tagArg < args.size()
+                                            && (args.get(tagArg) == null
+                                            || args.get(tagArg) instanceof String)
+                                            ? (String) args.get(tagArg)
+                                            : null;
+
+                            EngineTelemetry.emit(
+                                    processContext,
+                                    "NOTIF_POST_SEEN",
+                                    "method=" + methodName
+                                            + " tag=" + String.valueOf(tag)
+                                            + " id=" + notificationId
+                                            + " channel="
+                                            + String.valueOf(
+                                                    notification.getChannelId())
+                                            + " actions="
+                                            + (notification.actions == null
+                                                    ? 0
+                                                    : notification.actions.length));
 
                             Notification enhanced =
                                     DownloadProgressController.enhanceBeforePost(
@@ -790,11 +830,7 @@ public final class AcceleratorModule extends XposedModule {
 
                             Object[] nextArgs =
                                     args.toArray(new Object[0]);
-                            if (args.size() == 2) {
-                                nextArgs[1] = enhanced;
-                            } else {
-                                nextArgs[2] = enhanced;
-                            }
+                            nextArgs[notifArg] = enhanced;
 
                             Object result =
                                     chain.proceed(nextArgs);
@@ -812,7 +848,9 @@ public final class AcceleratorModule extends XposedModule {
                 EngineTelemetry.emit(
                         processContext,
                         "HOOK_FAIL",
-                        "NotificationManager.notify: "
+                        "NotificationManager."
+                                + methodName
+                                + ": "
                                 + t.getClass().getSimpleName()
                                 + ": "
                                 + String.valueOf(t.getMessage()));

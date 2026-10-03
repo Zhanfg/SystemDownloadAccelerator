@@ -55,6 +55,7 @@ final class DownloadControlController {
         final int control;
         final int status;
         final boolean deleted;
+        final String title;
 
         Target(
                 long id,
@@ -62,13 +63,15 @@ final class DownloadControlController {
                 String uri,
                 int control,
                 int status,
-                boolean deleted) {
+                boolean deleted,
+                String title) {
             this.id = id;
             this.sourcePackage = sourcePackage;
             this.uri = uri;
             this.control = control;
             this.status = status;
             this.deleted = deleted;
+            this.title = title;
         }
 
         boolean unfinished() {
@@ -130,8 +133,20 @@ final class DownloadControlController {
             Notification notification) {
         if (context == null || notification == null) return;
 
-        List<Target> targets = targetsForTag(context, tag);
+        List<Target> targets =
+                targetsForNotification(
+                        context,
+                        tag,
+                        notification);
         if (targets.isEmpty()) {
+            EngineTelemetry.emit(
+                    context,
+                    "CONTROL_TARGET_MISS",
+                    "tag=" + String.valueOf(tag)
+                            + " channel="
+                            + String.valueOf(notification.getChannelId())
+                            + " text="
+                            + String.valueOf(notificationText(notification)));
             return;
         }
 
@@ -476,36 +491,179 @@ final class DownloadControlController {
                 "changed=" + changed);
     }
 
-    private static List<Target> targetsForTag(
+    private static List<Target> targetsForNotification(
             Context context,
-            String tag) {
-        if (tag == null || tag.isBlank()) {
-            return new ArrayList<>();
-        }
+            String tag,
+            Notification notification) {
+        if (tag != null && !tag.isBlank()) {
+            if (tag.startsWith("1:")
+                    || tag.startsWith("2:")) {
+                String source = tag.substring(2).trim();
+                List<Target> bySource =
+                        queryTargets(
+                                context,
+                                null,
+                                source.isEmpty() ? null : source);
+                if (!bySource.isEmpty()) {
+                    return bySource;
+                }
+            }
 
-        if (tag.startsWith("1:")
-                || tag.startsWith("2:")) {
-            String source = tag.substring(2).trim();
-            return queryTargets(
-                    context,
-                    null,
-                    source.isEmpty() ? null : source);
-        }
-
-        if (tag.startsWith("3:")) {
-            try {
-                long id =
-                        Long.parseLong(
-                                tag.substring(2).trim());
-                return queryTargets(
-                        context,
-                        new long[]{id},
-                        null);
-            } catch (Throwable ignored) {
+            if (tag.startsWith("3:")) {
+                try {
+                    long id =
+                            Long.parseLong(
+                                    tag.substring(2).trim());
+                    List<Target> byId =
+                            queryTargets(
+                                    context,
+                                    new long[]{id},
+                                    null);
+                    if (!byId.isEmpty()) {
+                        return byId;
+                    }
+                } catch (Throwable ignored) {
+                }
             }
         }
 
-        return new ArrayList<>();
+        /*
+         * ColorOS 16 can post DownloadProvider notifications without the
+         * AOSP DownloadNotifier tags. This code executes only in the provider
+         * process, so provider rows are the authoritative fallback.
+         */
+        List<Target> active = queryActiveTargets(context);
+        if (active.size() <= 1) {
+            return active;
+        }
+
+        String text = normalizeText(notificationText(notification));
+        if (text != null) {
+            ArrayList<Target> titleMatches = new ArrayList<>();
+            for (Target target : active) {
+                String title = normalizeText(target.title);
+                if (title == null) continue;
+                if (text.contains(title)
+                        || title.contains(text)) {
+                    titleMatches.add(target);
+                }
+            }
+            if (!titleMatches.isEmpty()) {
+                return titleMatches;
+            }
+        }
+
+        // OEM group notification: preserve group semantics instead of
+        // dropping all controls.
+        return active;
+    }
+
+    private static List<Target> queryActiveTargets(
+            Context context) {
+        ArrayList<Target> out = new ArrayList<>();
+        if (context == null) return out;
+
+        Cursor cursor = null;
+        try {
+            cursor = context.getContentResolver().query(
+                    ALL_DOWNLOADS,
+                    new String[]{
+                            "_id",
+                            "notificationpackage",
+                            "uri",
+                            "control",
+                            "status",
+                            "deleted",
+                            "title"
+                    },
+                    null,
+                    null,
+                    null);
+            if (cursor == null) return out;
+
+            while (cursor.moveToNext()) {
+                long id = cursor.getLong(0);
+                String pkg = cursor.getString(1);
+                String uri = cursor.getString(2);
+                int control = cursor.getInt(3);
+                int status = cursor.getInt(4);
+                boolean deleted = cursor.getInt(5) != 0;
+                String title = cursor.getString(6);
+
+                if (deleted || status >= 200) {
+                    continue;
+                }
+
+                out.add(
+                        new Target(
+                                id,
+                                normalize(pkg),
+                                uri,
+                                control,
+                                status,
+                                false,
+                                title));
+            }
+        } catch (Throwable t) {
+            EngineTelemetry.emit(
+                    context,
+                    "CONTROL_QUERY_ACTIVE_ERROR",
+                    t.getClass().getSimpleName()
+                            + ": "
+                            + String.valueOf(t.getMessage()));
+        } finally {
+            if (cursor != null) {
+                try {
+                    cursor.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return out;
+    }
+
+    private static String notificationText(
+            Notification notification) {
+        if (notification == null
+                || notification.extras == null) {
+            return null;
+        }
+
+        StringBuilder out = new StringBuilder();
+        appendText(
+                out,
+                notification.extras.getCharSequence(
+                        Notification.EXTRA_TITLE));
+        appendText(
+                out,
+                notification.extras.getCharSequence(
+                        Notification.EXTRA_TEXT));
+        appendText(
+                out,
+                notification.extras.getCharSequence(
+                        Notification.EXTRA_SUB_TEXT));
+        return out.length() == 0 ? null : out.toString();
+    }
+
+    private static void appendText(
+            StringBuilder out,
+            CharSequence value) {
+        if (value == null) return;
+        String text = value.toString().trim();
+        if (text.isEmpty()) return;
+        if (out.length() > 0) {
+            out.append(' ');
+        }
+        out.append(text);
+    }
+
+    private static String normalizeText(String value) {
+        if (value == null) return null;
+        String text =
+                value.trim()
+                        .toLowerCase(Locale.ROOT)
+                        .replace('\n', ' ');
+        return text.isEmpty() ? null : text;
     }
 
     private static List<Target> queryTargets(
@@ -533,7 +691,8 @@ final class DownloadControlController {
                             "uri",
                             "control",
                             "status",
-                            "deleted"
+                            "deleted",
+                            "title"
                     },
                     null,
                     null,
@@ -547,6 +706,7 @@ final class DownloadControlController {
                 int control = cursor.getInt(3);
                 int status = cursor.getInt(4);
                 boolean deleted = cursor.getInt(5) != 0;
+                String title = cursor.getString(6);
 
                 if (!filter.isEmpty()
                         && !filter.contains(id)) {
@@ -568,7 +728,8 @@ final class DownloadControlController {
                                 uri,
                                 control,
                                 status,
-                                deleted));
+                                deleted,
+                                title));
             }
         } catch (Throwable t) {
             EngineTelemetry.emit(
