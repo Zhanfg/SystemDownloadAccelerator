@@ -34,6 +34,11 @@ final class LiveUpdateBridge {
         extras.putLong("total", total);
         extras.putString("title", metadata.title);
         extras.putString("source", metadata.sourcePackage);
+        android.graphics.drawable.Icon nativeIcon =
+                DownloadIconResolver.nativeSmallIcon();
+        if (nativeIcon != null) {
+            extras.putParcelable("smallIcon", nativeIcon);
+        }
         extras.putAll(
                 DownloadControlController.liveActionBundle(
                         context,

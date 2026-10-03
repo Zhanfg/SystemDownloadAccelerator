@@ -7,6 +7,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
 
@@ -74,9 +75,31 @@ final class LiveUpdatePublisher {
                     : 0;
 
             Notification.Builder builder =
-                    new Notification.Builder(context, CHANNEL_ID)
-                            .setSmallIcon(android.R.drawable.stat_sys_download)
-                            .setContentTitle(
+                    new Notification.Builder(context, CHANNEL_ID);
+
+            Icon providerSmallIcon = null;
+            try {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    providerSmallIcon =
+                            data.getParcelable(
+                                    "smallIcon",
+                                    Icon.class);
+                } else {
+                    //noinspection deprecation
+                    providerSmallIcon =
+                            data.getParcelable("smallIcon");
+                }
+            } catch (Throwable ignored) {
+            }
+
+            if (providerSmallIcon != null) {
+                builder.setSmallIcon(providerSmallIcon);
+            } else {
+                builder.setSmallIcon(
+                        DownloadIconResolver.fallbackDownloadIcon());
+            }
+
+            builder.setContentTitle(
                                     title == null ? "正在下载" : title)
                             .setContentText(
                                     total > 0L
@@ -127,15 +150,15 @@ final class LiveUpdatePublisher {
                     builder,
                     data,
                     "copyIntent",
-                    android.R.drawable.ic_menu_share,
+                    DownloadIconResolver.copyIcon(),
                     "复制链接");
             addAction(
                     builder,
                     data,
                     "toggleIntent",
                     data.getBoolean("paused", false)
-                            ? android.R.drawable.ic_media_play
-                            : android.R.drawable.ic_media_pause,
+                            ? DownloadIconResolver.resumeIcon()
+                            : DownloadIconResolver.pauseIcon(),
                     data.getBoolean("paused", false)
                             ? "继续"
                             : "暂停");
@@ -143,7 +166,7 @@ final class LiveUpdatePublisher {
                     builder,
                     data,
                     "cancelIntent",
-                    android.R.drawable.ic_menu_close_clear_cancel,
+                    DownloadIconResolver.cancelIcon(),
                     "取消");
 
             Notification notification = builder.build();

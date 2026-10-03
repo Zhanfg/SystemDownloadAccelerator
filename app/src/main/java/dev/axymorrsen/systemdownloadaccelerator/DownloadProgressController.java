@@ -55,6 +55,8 @@ final class DownloadProgressController {
             return notification;
         }
 
+        DownloadIconResolver.observe(notification);
+
         String channel = notification.getChannelId();
         if (OVERLAY_CHANNEL.equals(channel)) {
             return notification;
@@ -186,11 +188,19 @@ final class DownloadProgressController {
 
         Notification.Builder builder =
                 new Notification.Builder(context, OVERLAY_CHANNEL)
-                        .setSmallIcon(android.R.drawable.stat_sys_download)
                         .setOnlyAlertOnce(true)
                         .setOngoing(true)
                         .setCategory(Notification.CATEGORY_PROGRESS)
                         .setContentTitle(progressTitle(metadata));
+
+        android.graphics.drawable.Icon nativeIcon =
+                DownloadIconResolver.nativeSmallIcon();
+        if (nativeIcon != null) {
+            builder.setSmallIcon(nativeIcon);
+        } else {
+            builder.setSmallIcon(
+                    DownloadIconResolver.fallbackDownloadIcon());
+        }
 
         DownloadControlController.addOverlayActions(
                 context,

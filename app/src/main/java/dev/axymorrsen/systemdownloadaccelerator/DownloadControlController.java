@@ -165,7 +165,7 @@ final class DownloadControlController {
 
         Notification.Action copyAction =
                 action(
-                        android.R.drawable.ic_menu_share,
+                        DownloadIconResolver.copyIcon(),
                         "复制链接",
                         pending(
                                 context,
@@ -178,8 +178,8 @@ final class DownloadControlController {
                 unfinished
                         ? action(
                                 allPaused
-                                        ? android.R.drawable.ic_media_play
-                                        : android.R.drawable.ic_media_pause,
+                                        ? DownloadIconResolver.resumeIcon()
+                                        : DownloadIconResolver.pauseIcon(),
                                 allPaused ? "继续" : "暂停",
                                 pending(
                                         context,
@@ -196,7 +196,7 @@ final class DownloadControlController {
                         ? (existingCancel != null
                                 ? existingCancel
                                 : action(
-                                        android.R.drawable.ic_menu_close_clear_cancel,
+                                        DownloadIconResolver.cancelIcon(),
                                         "取消",
                                         pending(
                                                 context,
@@ -309,7 +309,7 @@ final class DownloadControlController {
                 target.control == CONTROL_PAUSED;
 
         builder.addAction(
-                android.R.drawable.ic_menu_share,
+                DownloadIconResolver.copyIcon(),
                 "复制链接",
                 pending(
                         context,
@@ -319,8 +319,8 @@ final class DownloadControlController {
                         "overlay:" + downloadId));
         builder.addAction(
                 paused
-                        ? android.R.drawable.ic_media_play
-                        : android.R.drawable.ic_media_pause,
+                        ? DownloadIconResolver.resumeIcon()
+                        : DownloadIconResolver.pauseIcon(),
                 paused ? "继续" : "暂停",
                 pending(
                         context,
@@ -329,7 +329,7 @@ final class DownloadControlController {
                         target.sourcePackage,
                         "overlay:" + downloadId));
         builder.addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
+                DownloadIconResolver.cancelIcon(),
                 "取消",
                 pending(
                         context,
