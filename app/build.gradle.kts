@@ -13,8 +13,8 @@ android {
         applicationId = "dev.axymorrsen.systemdownloadaccelerator"
         minSdk = 26
         targetSdk = 37
-        versionCode = 34
-        versionName = "0.8.0-alpha01-hotfix2"
+        versionCode = 35
+        versionName = "0.8.0-alpha01-hotfix3"
         buildConfigField("String", "BUILD_ID", "\"$buildId\"")
     }
 
@@ -39,7 +39,6 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core:1.19.1")
     compileOnly("io.github.libxposed:api:102.0.0")
     implementation("io.github.libxposed:service:102.0.0")
     testImplementation("junit:junit:4.13.2")

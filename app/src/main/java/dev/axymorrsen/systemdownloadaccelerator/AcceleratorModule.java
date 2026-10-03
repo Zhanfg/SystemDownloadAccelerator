@@ -214,6 +214,39 @@ public final class AcceleratorModule extends XposedModule {
 
         try {
             Context processContext = resolveProcessContext();
+
+            /*
+             * Never tear down a working generation until the incoming APK has
+             * proven that all module-side classes needed by this scope can be
+             * resolved. A bad dependency must leave the old hooks intact.
+             */
+            HotReloadPreflight preflight =
+                    preflightHotReload(scope);
+            EngineTelemetry.emit(
+                    processContext,
+                    "HOT_RELOAD_PREFLIGHT",
+                    "ok=" + preflight.ok
+                            + " checked=" + preflight.checked
+                            + " detail=" + preflight.detail
+                            + " targetVersion="
+                            + BuildConfig.VERSION_CODE
+                            + " build="
+                            + BuildConfig.BUILD_ID);
+
+            if (!preflight.ok) {
+                emit(Log.ERROR,
+                        "hot reload preflight failed; keeping old hooks scope="
+                                + scope.packageName
+                                + " detail="
+                                + preflight.detail);
+                EngineTelemetry.emit(
+                        processContext,
+                        "HOT_RELOAD_ABORT",
+                        "preflight failed; old generation preserved: "
+                                + preflight.detail);
+                return;
+            }
+
             OldHookTeardown teardown =
                     teardownOldGeneration(param);
 
@@ -269,6 +302,75 @@ public final class AcceleratorModule extends XposedModule {
                     t.getClass().getSimpleName()
                             + ": "
                             + String.valueOf(t.getMessage()));
+        }
+    }
+
+    private HotReloadPreflight preflightHotReload(
+            Scope scope) {
+        String[] common = {
+                "dev.axymorrsen.systemdownloadaccelerator.ConnectionRegistry",
+                "dev.axymorrsen.systemdownloadaccelerator.DownloadControlController",
+                "dev.axymorrsen.systemdownloadaccelerator.DownloadProgressController",
+                "dev.axymorrsen.systemdownloadaccelerator.NotificationCleanupController",
+                "dev.axymorrsen.systemdownloadaccelerator.EngineTelemetry",
+                "dev.axymorrsen.systemdownloadaccelerator.BuildConfig"
+        };
+
+        int checked = 0;
+        try {
+            ClassLoader moduleLoader =
+                    AcceleratorModule.class.getClassLoader();
+            if (moduleLoader == null) {
+                return new HotReloadPreflight(
+                        false,
+                        checked,
+                        "module ClassLoader unavailable");
+            }
+
+            for (String name : common) {
+                Class.forName(name, false, moduleLoader);
+                checked++;
+            }
+
+            if (scope == Scope.PROVIDER) {
+                String[] provider = {
+                        "dev.axymorrsen.systemdownloadaccelerator.LiveDownloadNotificationController",
+                        "dev.axymorrsen.systemdownloadaccelerator.LiveUpdateBridge",
+                        "dev.axymorrsen.systemdownloadaccelerator.ParallelRangeEngine",
+                        "dev.axymorrsen.systemdownloadaccelerator.ParallelRangeInputStream"
+                };
+                for (String name : provider) {
+                    Class.forName(name, false, moduleLoader);
+                    checked++;
+                }
+            }
+
+            return new HotReloadPreflight(
+                    true,
+                    checked,
+                    "ready");
+        } catch (Throwable t) {
+            return new HotReloadPreflight(
+                    false,
+                    checked,
+                    t.getClass().getSimpleName()
+                            + ": "
+                            + String.valueOf(t.getMessage()));
+        }
+    }
+
+    private static final class HotReloadPreflight {
+        final boolean ok;
+        final int checked;
+        final String detail;
+
+        HotReloadPreflight(
+                boolean ok,
+                int checked,
+                String detail) {
+            this.ok = ok;
+            this.checked = checked;
+            this.detail = detail == null ? "" : detail;
         }
     }
 

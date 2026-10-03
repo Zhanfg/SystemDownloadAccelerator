@@ -6,32 +6,17 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 
-import androidx.core.app.NotificationCompat;
-
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.Arrays;
-import java.util.List;
 
-/**
- * Android 16 live-update publisher.
- *
- * Uses the same public AndroidX live-activity primitives proven by
- * InstallerX-Revived: NotificationCompat.ProgressStyle,
- * setRequestPromotedOngoing(true), short critical text, a high-importance
- * dedicated channel, and progress segments. No ColorOS private API is used.
- */
 final class LiveUpdatePublisher {
     static final String CHANNEL_ID = "sda_live_download";
-
     private static final int NOTIFICATION_ID = 8200;
     private static final String TAG_PREFIX = "sda-live:";
-    private static final int PROGRESS_MAX = 10_000;
 
     private LiveUpdatePublisher() {}
 
@@ -81,16 +66,15 @@ final class LiveUpdatePublisher {
         long total = data.getLong("total", -1L);
         String title = clean(data.getString("title"));
         String source = clean(data.getString("source"));
-        boolean paused = data.getBoolean("paused", false);
 
         try {
-            int progress =
-                    total > 0L
-                            ? basisPoints(current, total)
-                            : 0;
+            int max = total > 0L ? 10_000 : 100;
+            int value = total > 0L
+                    ? basisPoints(current, total)
+                    : 0;
 
-            NotificationCompat.Builder builder =
-                    new NotificationCompat.Builder(context, CHANNEL_ID)
+            Notification.Builder builder =
+                    new Notification.Builder(context, CHANNEL_ID)
                             .setSmallIcon(android.R.drawable.stat_sys_download)
                             .setContentTitle(
                                     title == null ? "正在下载" : title)
@@ -102,41 +86,42 @@ final class LiveUpdatePublisher {
                                             : "已下载 "
                                                     + ProgressFormat.bytes(current))
                             .setSubText(source)
-                            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-                            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                            .setCategory(Notification.CATEGORY_STATUS)
+                            .setVisibility(Notification.VISIBILITY_PUBLIC)
                             .setOngoing(true)
                             .setOnlyAlertOnce(true)
-                            .setSilent(true)
                             .setShowWhen(false)
-                            .setColorized(false)
-                            .setContentIntent(
-                                    liveContentIntent(
-                                            context,
-                                            id))
-                            .setRequestPromotedOngoing(true)
-                            .setProgress(
-                                    PROGRESS_MAX,
-                                    progress,
-                                    total <= 0L);
+                            .setProgress(max, value, total <= 0L);
+
+            Notification.ProgressStyle style =
+                    new Notification.ProgressStyle()
+                            .setStyledByProgress(false);
+            if (total > 0L) {
+                style.setProgress(value);
+            } else {
+                style.setProgressIndeterminate(true);
+            }
+            builder.setStyle(style);
+
+            builder.getExtras().putBoolean(
+                    "android.requestPromotedOngoing",
+                    true);
+            invokeBuilderBoolean(
+                    builder,
+                    "setRequestPromotedOngoing",
+                    true);
 
             if (total > 0L) {
-                builder.setShortCriticalText(
+                invokeBuilderString(
+                        builder,
+                        "setShortCriticalText",
                         compactPercent(
                                 Math.max(
                                         0.0,
                                         Math.min(
                                                 1.0,
                                                 (double) current / total))));
-            } else {
-                builder.setShortCriticalText(
-                        paused ? "已暂停" : "下载中");
             }
-
-            NotificationCompat.ProgressStyle style =
-                    createProgressStyle(
-                            progress,
-                            total > 0L);
-            builder.setStyle(style);
 
             addAction(
                     builder,
@@ -148,10 +133,12 @@ final class LiveUpdatePublisher {
                     builder,
                     data,
                     "toggleIntent",
-                    paused
+                    data.getBoolean("paused", false)
                             ? android.R.drawable.ic_media_play
                             : android.R.drawable.ic_media_pause,
-                    paused ? "继续" : "暂停");
+                    data.getBoolean("paused", false)
+                            ? "继续"
+                            : "暂停");
             addAction(
                     builder,
                     data,
@@ -160,13 +147,11 @@ final class LiveUpdatePublisher {
                     "取消");
 
             Notification notification = builder.build();
-
             boolean promotable =
-                    NotificationCompat.hasPromotableCharacteristics(
-                            notification);
-            boolean requested =
-                    NotificationCompat.isRequestPromotedOngoing(
-                            notification);
+                    queryBoolean(
+                            notification,
+                            "hasPromotableCharacteristics",
+                            false);
 
             manager.notify(
                     TAG_PREFIX + id,
@@ -181,21 +166,13 @@ final class LiveUpdatePublisher {
 
             out.putBoolean("posted", true);
             out.putBoolean("promotable", promotable);
-            out.putBoolean("promotionRequested", requested);
             out.putBoolean("promoted", promoted);
-            out.putInt(
-                    "channelImportance",
-                    channelImportance(manager));
             out.putString(
                     "detail",
                     "enabled=" + enabled
-                            + " requested=" + requested
                             + " promotable=" + promotable
                             + " allowed=" + allowed
-                            + " promoted=" + promoted
-                            + " style=compat-segments"
-                            + " importance="
-                            + channelImportance(manager));
+                            + " promoted=" + promoted);
             return out;
         } catch (Throwable t) {
             out.putBoolean("posted", false);
@@ -232,53 +209,6 @@ final class LiveUpdatePublisher {
         return out;
     }
 
-    private static NotificationCompat.ProgressStyle createProgressStyle(
-            int progress,
-            boolean determinate) {
-        NotificationCompat.ProgressStyle style =
-                new NotificationCompat.ProgressStyle()
-                        .setStyledByProgress(true);
-
-        if (!determinate) {
-            return style.setProgressIndeterminate(true);
-        }
-
-        // Four equal milestones give SystemUI/OEM renderers an explicit
-        // journey structure instead of a bare linear progress value.
-        List<NotificationCompat.ProgressStyle.Segment> segments =
-                Arrays.asList(
-                        new NotificationCompat.ProgressStyle.Segment(2500),
-                        new NotificationCompat.ProgressStyle.Segment(2500),
-                        new NotificationCompat.ProgressStyle.Segment(2500),
-                        new NotificationCompat.ProgressStyle.Segment(2500));
-
-        return style
-                .setProgressSegments(segments)
-                .setProgress(progress);
-    }
-
-    private static PendingIntent liveContentIntent(
-            Context context,
-            long id) {
-        Intent intent =
-                new Intent(context, MainActivity.class)
-                        .setAction(
-                                "dev.axymorrsen.systemdownloadaccelerator.action.OPEN_LIVE_DOWNLOAD")
-                        .putExtra("download_id", id)
-                        .addFlags(
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                        | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-
-        int requestCode =
-                (int) (id ^ (id >>> 32));
-        return PendingIntent.getActivity(
-                context,
-                requestCode,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT
-                        | PendingIntent.FLAG_IMMUTABLE);
-    }
-
     private static void ensureChannel(
             NotificationManager manager) {
         NotificationChannel existing =
@@ -298,21 +228,8 @@ final class LiveUpdatePublisher {
         manager.createNotificationChannel(channel);
     }
 
-    private static int channelImportance(
-            NotificationManager manager) {
-        try {
-            NotificationChannel channel =
-                    manager.getNotificationChannel(CHANNEL_ID);
-            return channel == null
-                    ? NotificationManager.IMPORTANCE_UNSPECIFIED
-                    : channel.getImportance();
-        } catch (Throwable ignored) {
-            return NotificationManager.IMPORTANCE_UNSPECIFIED;
-        }
-    }
-
     private static void addAction(
-            NotificationCompat.Builder builder,
+            Notification.Builder builder,
             Bundle data,
             String key,
             int icon,
@@ -332,9 +249,39 @@ final class LiveUpdatePublisher {
 
         if (intent != null) {
             builder.addAction(
-                    icon,
-                    title,
-                    intent);
+                    new Notification.Action.Builder(
+                            icon,
+                            title,
+                            intent)
+                            .build());
+        }
+    }
+
+    private static void invokeBuilderBoolean(
+            Notification.Builder builder,
+            String name,
+            boolean value) {
+        try {
+            Method method =
+                    Notification.Builder.class.getMethod(
+                            name,
+                            boolean.class);
+            method.invoke(builder, value);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void invokeBuilderString(
+            Notification.Builder builder,
+            String name,
+            String value) {
+        try {
+            Method method =
+                    Notification.Builder.class.getMethod(
+                            name,
+                            String.class);
+            method.invoke(builder, value);
+        } catch (Throwable ignored) {
         }
     }
 
@@ -391,7 +338,7 @@ final class LiveUpdatePublisher {
                 Math.min(
                         1.0,
                         (double) current / total));
-        return (int) Math.round(ratio * PROGRESS_MAX);
+        return (int) Math.round(ratio * 10_000.0);
     }
 
     private static String compactPercent(double ratio) {
